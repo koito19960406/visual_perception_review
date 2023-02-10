@@ -8,6 +8,7 @@ import requests, json, urllib
 from abc import ABCMeta, abstractmethod
 from lxml import etree
 from . import log_util
+import os
 
 logger = log_util.get_logger(__name__)
 
@@ -94,7 +95,7 @@ class ElsEntity(metaclass=ABCMeta):
         """If data exists for the entity, writes it to disk as a .JSON file with
              the url-encoded URI as the filename and returns True. Else, returns
              False."""
-        if (self.data):
+        if self.data is not None:
             if self._client.accept == "application/json":
                 dataPath = self.client.local_dir / (urllib.parse.quote_plus(self.uri)+'.json')
                 with dataPath.open(mode='w') as dump_file:
@@ -102,9 +103,10 @@ class ElsEntity(metaclass=ABCMeta):
                     dump_file.close()
             elif self._client.accept == "text/xml":
                 dataPath = self.client.local_dir / (urllib.parse.quote_plus(self.uri)+'.xml')
-                tree = etree.ElementTree(self.data)
-                with open(dataPath, "wb") as f:
-                    tree.write(f, pretty_print=True)
+                if not os.path.exists(dataPath):
+                    tree = etree.ElementTree(self.data)
+                    with open(dataPath, "wb") as f:
+                        tree.write(f, pretty_print=True)
             logger.info('Wrote ' + self.uri + ' to file')
             return True
         else:

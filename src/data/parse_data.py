@@ -1,11 +1,15 @@
 import lxml
+from lxml import etree
 import re
 from collections import defaultdict
+from tqdm import tqdm
 
 class Parser:
     """This class parse data from a list of xml files and structure strings into a JSON file with the following structure
         - DOI
-            - title
+            - title: str
+            - Keywords: list
+            - Abstract: str
             - Introduction, Background
                 - a dict of subsections... (e.g., {"Introduction": "Today's world is facing...", "Background": "The problem is caused..."})
             - data, method, methodology
@@ -17,7 +21,7 @@ class Parser:
         The parsing is conducted using regex expressions.
     """
     
-    def __init__(self, doc_list) -> None:
+    def __init__(self, doc_list: list) -> None:
         self._doc_list = doc_list
         
     @property
@@ -27,25 +31,27 @@ class Parser:
     def doc_list(self,doc_list):
         self._doc_list = doc_list
 
-    def categorize_section(self, title):
+    def _categorize_section(self, title: str) -> str:
         """a method to categorize titles
 
         Args:
             title (_type_): _description_
         """
         patterns = [
-            (r'.*intro.*|.*background.*', 'Introduction'),
+            (r'.*intro.*|.*background.*|.*problem statement.*|.*research objective.*', 'Introduction'),
             (r'.*review.*|.*work.*', 'Literature review'),
-            (r'.*method.*', 'Methodology'),
-            (r'.*result.*|.*discussion.*|.*conclusion.*', 'Results')
+            (r'(?!.*result.*)(.*method.*|.*data.*|.*experiment.*|.*model.*|.*pipeline.*|.*evaluation.*|.*design.*|.*materials.*)', 'Methodology'),
+            (r'.*result.*|.*discussion.*|.*conclusion.*|.*summary.*|.*implication.*', 'Results')
             ]
 
         title = title.lower()  # convert to lowercase
         for pattern, label in patterns:
             if re.search(pattern, title):
-                return(label)
-
-    def parse_single(self, doc_xml_root):
+                return label 
+        # if it doesn't get caught by any labels, then return as "others"
+        return "Others" 
+        
+    def _parse_single_to_nested_dict(self, doc_xml_root: lxml.etree._Element) -> defaultdict:
         """method to parse a single xml object and return a dictionary
 
         Args:
@@ -54,8 +60,10 @@ class Parser:
         Return: 
             label_dict (dict): dictionary with the structure stated above
         """
-        # initialize the final dict (3 level, i.e. DOI->Intro->Subsections)
-        label_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
+        # initialize the final dict (3 level, i.e. DOI -> general sections -> actual sections -> Subsections)
+        def create_nested_defaultdict():
+            return defaultdict(create_nested_defaultdict)
+        label_dict = create_nested_defaultdict()
         
         # get namespace
         ns = doc_xml_root.nsmap
@@ -66,22 +74,110 @@ class Parser:
 
         # get a title
         label_dict[doi]["title"] = coredata.find("dc:title", namespaces={"dc":ns["dc"]}).text
+
+        # get keywords
+        head = doc_xml_root.xpath(f"//*[translate(name(), 'FULLTEXTR', 'fulltextr')='head']")[0]
+        keywords = [re.sub(" +", " ", etree.tostring(keyword, method="text", encoding="unicode").replace("\n", " ")).strip() for keyword in head.xpath(".//ce:keyword", namespaces={"ce": ns["ce"]})]
+        label_dict[doi]["keywords"] = keywords
+        
+        # get abstract
+        abstract = re.sub(" +", " ", "".join(head.xpath(".//ce:abstract//ce:simple-para/text()", namespaces={"ce":ns["ce"]}))).replace("\n", " ").strip()
+        label_dict[doi]["abstract"] = abstract
         
         # find sections
-        sections_element_root = doc_xml_root.xpath(f"//*[translate(name(), 'FULLTEXTR', 'fulltextr')='ce:sections']")
+        body = doc_xml_root.xpath(f"//*[translate(name(), 'FULLTEXTR', 'fulltextr')='body']")
+        section_element_root = body[0].find("ce:sections", namespaces = {"ce":ns["ce"]}).findall("ce:section", namespaces={"ce": ns["ce"]})  
 
-        # get a list of section 
-        section_element_root = sections_element_root[0].findall("ce:section", namespaces={"ce": ns["ce"]})  
-        
-        # loop through and classify
         for section in section_element_root:
-            # get section title and label
-            section_title = section.find("ce:section-title",namespaces={"ce": ns["ce"]})
-            label = self.categorize_section(section_title)
-            
-            # get all the text
-            
-            label_dict[doi][label][section_title]
-            print(section_title.text)
+            section_title = section.find("ce:section-title",namespaces={"ce": ns["ce"]}).text
+            label = self._categorize_section(section_title) 
+            section_below_list = section.findall("ce:section",namespaces={"ce": ns["ce"]})
+            if len(section_below_list) > 0:
+                for section_below in section_below_list:
+                    sub_section_title = section_below.find("ce:section-title",namespaces={"ce": ns["ce"]}).text
+                    paragraphs = [re.sub(r'\[.*?\]', '', re.sub(" +", " ", etree.tostring(para, method="text", encoding="unicode").\
+                        replace("\n", " "))).replace(" .", ".").strip() for para in section_below.xpath(".//ce:para", namespaces={"ce": ns["ce"]})]
+                    # send any subsections with "result" in their titles to result label
+                    if "result" in sub_section_title:
+                        label_dict[doi]["Results"][section_title][sub_section_title] = paragraphs
+                    else:
+                        # store in the label_dict
+                        label_dict[doi][label][section_title][sub_section_title] = paragraphs
+            else:
+                paragraphs = [re.sub(r'\[.*?\]', '', re.sub(" +", " ", etree.tostring(para, method="text", encoding="unicode").\
+                    replace("\n", " "))).replace(" .", ".").strip() for para in section.xpath(".//ce:para", namespaces={"ce": ns["ce"]})]
+                # store in the label_dict
+                label_dict[doi][label][section_title][section_title] = paragraphs
+        return label_dict
+    
+    def parse_multiple_to_nested_dict(self) -> defaultdict:
+        """use self.doc_list to parse them into JSON
+        """
+        # final dictionary
+        label_dict_joined = defaultdict(str)
         
-        # 
+        for doc in self.doc_list:
+            root = etree.parse(doc).getroot()
+            label_dict = self._parse_single_to_nested_dict(root)
+            label_dict_joined.update(label_dict)
+            
+        return label_dict_joined
+    
+    def _parse_single_to_simple_dict(self, doc_xml_root: lxml.etree._Element) -> defaultdict:
+        """Parse xml file and return a simple dictionary containing the paper content
+
+        Args:
+            doc_xml_root (lxml.etree._Element): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        # initialize the final dict
+        label_dict = defaultdict(str)
+        
+        # get namespace
+        ns = doc_xml_root.nsmap
+
+        # get DOI (All the elments in the list will be under this DOI)
+        coredata = doc_xml_root.find("coredata", namespaces={None:ns[None]})
+        doi = coredata.find("prism:doi", namespaces={"prism":ns["prism"]}).text
+
+        # get a title
+        title = coredata.find("dc:title", namespaces={"dc":ns["dc"]}).text
+
+        # get keywords
+        head = doc_xml_root.xpath(f"//*[translate(name(), 'FULLTEXTR', 'fulltextr')='head']")[0]
+        keywords = [re.sub(" +", " ", etree.tostring(keyword, method="text", encoding="unicode").replace("\n", " ")).strip() for keyword in head.xpath(".//ce:keyword", namespaces={"ce": ns["ce"]})]
+        
+        # get abstract
+        abstract = re.sub(" +", " ", "".join(head.xpath(".//ce:abstract//ce:simple-para/text()", namespaces={"ce":ns["ce"]}))).replace("\n", " ").strip()
+        
+        # find sections
+        body = doc_xml_root.xpath(f"//*[translate(name(), 'FULLTEXTR', 'fulltextr')='body']")
+        section_element_root = body[0].find("ce:sections", namespaces = {"ce":ns["ce"]}).findall("ce:section", namespaces={"ce": ns["ce"]})  
+        content_list = body[0].xpath(".//ce:section-title|.//ce:para", namespaces={"ce": ns["ce"]})
+        # store all the text content to text
+        text = "Title: " + title + "\n\n" + "Keywords: " + ", ".join(keywords) +\
+            "\n\n" + "Abstract: " + abstract + "\n\n" + "Paper content:\n"    
+        for content in content_list:
+            # if content.tag == f'{{{ns["ce"]}}}section-title':
+            text += re.sub(r'\[.*?\]', '', re.sub(" +", " ", etree.tostring(content, method="text", encoding="unicode").\
+                replace("\n", " "))).replace(" .", ".").strip() + "\n\n"
+            # else:
+            #     text += re.sub(r'\[.*?\]', '', re.sub(" +", " ", etree.tostring(content, method="text", encoding="unicode").\
+            #         replace("\n", " "))).replace(" .", ".").strip() + " " 
+        label_dict[doi] = text.strip()
+        return label_dict
+
+    def parse_multiple_to_simple_dict(self) -> defaultdict:
+        """use self.doc_list to parse them into JSON
+        """
+        # final dictionary
+        label_dict_joined = defaultdict(str)
+        
+        for doc in tqdm(self.doc_list, desc="Parsing papers"):
+            root = etree.parse(doc).getroot()
+            label_dict = self._parse_single_to_simple_dict(root)
+            label_dict_joined.update(label_dict)
+            
+        return label_dict_joined
