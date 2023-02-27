@@ -151,14 +151,20 @@ class Parser:
         
         # get abstract
         abstract = re.sub(" +", " ", "".join(head.xpath(".//ce:abstract//ce:simple-para/text()", namespaces={"ce":ns["ce"]}))).replace("\n", " ").strip()
-        
+
+        # get data availability
+        try: 
+            data_availability = re.sub(" +", " ", "".join(head.xpath(".//ce:data-availability//ce:para/text()", namespaces={"ce":ns["ce"]}))).replace("\n", " ").strip() 
+        except:
+            data_availability = "Not mentioned"
+            
         # find sections
         body = doc_xml_root.xpath(f"//*[translate(name(), 'FULLTEXTR', 'fulltextr')='body']")
         section_element_root = body[0].find("ce:sections", namespaces = {"ce":ns["ce"]}).findall("ce:section", namespaces={"ce": ns["ce"]})  
         content_list = body[0].xpath(".//ce:section-title|.//ce:para", namespaces={"ce": ns["ce"]})
         # store all the text content to text
         text = "Title: " + title + "\n\n" + "Keywords: " + ", ".join(keywords) +\
-            "\n\n" + "Abstract: " + abstract + "\n\n" + "Paper content:\n"    
+            "\n\n" + "Abstract: " + abstract + "\n\n" + "Data availability: " + data_availability + "\n\n" + "Paper content:\n"    
         for content in content_list:
             # if content.tag == f'{{{ns["ce"]}}}section-title':
             text += re.sub(r'\[.*?\]', '', re.sub(" +", " ", etree.tostring(content, method="text", encoding="unicode").\

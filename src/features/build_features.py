@@ -7,6 +7,7 @@ import polars as pl
 import os 
 import glob
 import json
+from datetime import date
 
 from util.log_util import get_logger
 from clean_text import TextCleaner
@@ -48,7 +49,7 @@ def main(input_filepath: str, output_path: str, question_text_path: str, openai_
     print(text_summarizer.openai_api_key)
     logger.info('summarizing texts')
     text_summarizer.summarize_text_from_folder(input_filepath)
-    output_csv_path = Path(output_path) / "papers_extracted.csv"
+    output_csv_path = Path(output_path) / ("papers_extracted_" + str(date.today()) + ".csv")
     text_summarizer.put_output_in_csv(str(output_csv_path))
 
 if __name__ == '__main__':

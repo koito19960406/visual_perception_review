@@ -81,7 +81,7 @@ class TextSummarizer:
             os.environ['HUGGINGFACEHUB_API_TOKEN'] = huggingface_api_key
             self._huggingface_api_key = huggingface_api_key
         with open(question_list_text, "r") as file:
-            self._input_question_list: list = file.read().split("\n")
+            self._input_question_list: list = file.read().split("\n\n")
         self._embedding = embedding
         self._llm = llm
         self._cache_path = Path(cache_path)
@@ -138,13 +138,13 @@ class TextSummarizer:
         self._overwrite_index = overwrite_index
 
     def _split_text(self,text) -> list:
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+        text_splitter = CharacterTextSplitter(separator=".\n\n", chunk_size=1000, chunk_overlap=0)
         texts = text_splitter.split_text(text)
         return [t for t in texts if t]
 
     @retry(exceptions=openai.error.RateLimitError, tries=2, delay=60, back_off=2)
-    def _append_to_index(self, docsearch: FAISS, text: str, embeddings: Embeddings) -> None:
-        docsearch.from_texts([text], embeddings)
+    def _append_to_index(self, docsearch: FAISS, text: str) -> None:
+        docsearch.add_texts([text])
     
     def _embedding_from_selection(self) -> Embeddings:
         if self.embedding == "huggingface":
@@ -176,7 +176,7 @@ class TextSummarizer:
         embeddings = self._embedding_from_selection()
         docsearch: FAISS = FAISS.from_texts(chunked_text_list[:2], embeddings)
         for text in chunked_text_list[2:]:
-            self._append_to_index(docsearch, text, embeddings)
+            self._append_to_index(docsearch, text)
 
         faiss.write_index(docsearch.index, index_path.as_posix())
         with open(faiss_db, "wb") as f:
@@ -202,8 +202,9 @@ class TextSummarizer:
         - Provide keywords and summary which should be relevant to answer the question.
         - Provide detailed responses that relate to the humans prompt.
         - Answer "Not sure" if you are not sure about the answer.
+        - Context:
         {context}
-        - Human:
+        - Question:
         ${question}
         - You:"""
 
@@ -222,7 +223,9 @@ class TextSummarizer:
     
     @retry(exceptions=openai.error.RateLimitError, tries=2, delay=60, back_off=2)
     def _send_prompt(self, qa: VectorDBQA, input_question: str) -> Any:
-        return qa.run(query=input_question)
+        result = qa({"query": input_question})
+        return result
+        # return qa.run(query=input_question)
     
     def _ask_question(self, text_file_name: str, chunked_text_list: list) -> str:
         # creat index
@@ -231,11 +234,13 @@ class TextSummarizer:
         search_index = self._load_index(index_dict["faiss_db"], index_dict["index_path"])
         llm = self._llm_provider()
         prompt = self._prompt_from_question()
-        qa = VectorDBQA.from_llm(llm=llm, prompt=prompt, vectorstore=search_index)
+        qa = VectorDBQA.from_llm(llm=llm, prompt=prompt, vectorstore=search_index, return_source_documents = True)
         output_aggregated = ""
         for input_question in self.input_question_list:
             output = self._send_prompt(qa, input_question)
-            output_aggregated += input_question + "\n" + output + "\n\n"
+            source_documents = " ".join([doc.page_content.replace("\n"," ") for doc in output["source_documents"]])
+            # append input question, source document, and answers to output_aggregated
+            output_aggregated += input_question + "\n" + "Source documents: " + source_documents + "\n" + output["result"] + "\n\n"
         return output_aggregated
     
     def summarize_text_from_file(self, input_file_path: str) -> None:
@@ -268,8 +273,9 @@ class TextSummarizer:
 
     def put_output_in_csv(self, output_file_path: str) -> None:
         # define helper function
-        def extract_questions_answers(file_path):
+        def extract_questions_sources_answers(file_path):
             questions = []
+            sources = []
             answers = []
 
             with open(file_path, 'r') as f:
@@ -281,31 +287,46 @@ class TextSummarizer:
                             answers.append("\n".join(answer))
                             answer = []
                         questions.append(line.strip().replace('Q: ', ''))
+                    elif line.startswith("Source documents: "):
+                        sources.append(line.strip().replace('Source documents: ', ''))
                     else:
                         answer.append(line.strip())
                 if answer:
                     answers.append("\n".join(answer))
-            return questions, answers
+            return questions, sources, answers
         # initialize dictionary
         data = {}
         # get files as list
         input_path = self.cache_path / ("embedding_" + self.embedding + "_llm_" + self.llm)
         file_paths = input_path.glob("*.txt")
         for file_path in file_paths:
-            questions, answers = extract_questions_answers(file_path)
+            questions, sources, answers = extract_questions_sources_answers(file_path)
             doi = file_path.name.replace(".txt","").replace("_","/")
-            data[doi] = {"questions": questions, "answers": answers}
+            data[doi] = {"questions": questions, "sources": sources, "answers": answers}
 
         header = ["DOI"]
         header.extend([question for question in data[str(list(data.keys())[0])]["questions"]])
-        rows = [header]
+        rows_questions_answer = [header]
+        rows_questions_source = [header]    
+        
+        for key, value in data.items():
+            # append a row for QA
+            row_questions_answer = [key]
+            row_questions_answer.extend(value["answers"])
+            rows_questions_answer.append(row_questions_answer)
 
-        for file_path, qa in data.items():
-            row = [file_path]
-            row.extend(qa["answers"])
-            rows.append(row)
-
+            # append a row for question and source
+            row_questions_source = [key]
+            row_questions_source.extend(value["sources"])
+            rows_questions_source.append(row_questions_source) 
+            
+        # save to the output_file_path: rows_questions_answer 
         with open(output_file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerows(rows)
+            writer.writerows(rows_questions_answer)
+            
+        # save to the output_file_path: rows_questions_source 
+        with open(output_file_path.replace(".csv", "_source.csv"), 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerows(rows_questions_source)
 

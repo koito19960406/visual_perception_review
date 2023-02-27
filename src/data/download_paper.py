@@ -6,9 +6,10 @@ from elsapy_wrapper.elssearch import ElsSearch
 import json
 import sys
 from util.log_util import get_logger
+from typing import Union
 
 class PaperDownloader:
-    def __init__(self, doi_list: list, api_key: str, inst_token: str, output_folder: str):
+    def __init__(self, doi_list: list, api_key:  Union[str, None], inst_token:  Union[str, None], output_folder: str):
         self.doi_list = doi_list
         
         # Initialize client

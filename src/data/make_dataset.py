@@ -7,6 +7,7 @@ import polars as pl
 import os 
 from glob import glob
 import json
+from typing import Union
 
 from download_paper import PaperDownloader
 from parse_data import Parser
@@ -15,7 +16,7 @@ from util.log_util import get_logger
 # @click.command()
 # @click.argument('input_filepath', type=click.Path(exists=True))
 # @click.argument('output_filepath', type=click.Path())
-def main(input_filepath: str, output_path: str, api_key: str, inst_token: str):
+def main(input_filepath: str, output_path: str, api_key: Union[str, None], inst_token: Union[str, None]):
     """ Runs data processing scripts to turn raw data from (../raw) into
         cleaned data ready to be analyzed (saved in ../processed).
     """
@@ -52,13 +53,13 @@ if __name__ == '__main__':
     project_dir = Path(__file__).resolve().parents[2]
 
     # input and output path
-    input_path = "data/external/scopus.csv"
+    input_path = "data/external/scopus_filtered.csv"
     output_path = "data/raw/"
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok=True)
     # find .env automagically by walking up directories until it's found, then
     # load up the .env entries as environment variables
     load_dotenv(find_dotenv())
-    api_key = os.getenv('API_KEY')
+    elsevier_api_key = os.getenv('ELSEVIER_API_KEY')
     inst_token = os.getenv('INST_TOKEN')
-    main(input_path, output_path, api_key, inst_token)
+    main(input_path, output_path, elsevier_api_key, inst_token)
