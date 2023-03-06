@@ -57,7 +57,7 @@ if __name__ == '__main__':
     project_dir = Path(__file__).resolve().parents[2]
 
     # input and output path
-    question_text_path = "data/external/question_list_text.txt"
+    question_text_path = "data/external/question_list_text copy.txt"
     input_path = "data/raw/papers/"
     output_path = "data/interim/"
     if not os.path.exists(output_path):

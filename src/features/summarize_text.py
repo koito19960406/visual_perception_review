@@ -10,6 +10,7 @@ import csv
 import faiss  # type: ignore
 import openai
 import torch
+from langchain.llms import OpenAIChat
 from langchain import OpenAI, VectorDBQA
 from langchain.embeddings import HuggingFaceEmbeddings, HuggingFaceHubEmbeddings
 from langchain.embeddings.base import Embeddings
@@ -199,14 +200,14 @@ class TextSummarizer:
     def _prompt_from_question(self) -> PromptTemplate:
         template = """
         Instructions:
-        - Provide keywords and summary which should be relevant to answer the question.
-        - Provide detailed responses that relate to the humans prompt.
+        - Provide keywords and summary which should be relevant to answer the question strictly based on the provided context.
+        - Provide detailed responses that relate to the question.
         - Answer "Not sure" if you are not sure about the answer.
         - Context:
         {context}
         - Question:
-        ${question}
-        - You:"""
+        ${question}"""
+ 
 
         return PromptTemplate(input_variables=["context", "question"], template=template)
     
@@ -219,7 +220,7 @@ class TextSummarizer:
             )
             return HuggingFacePipeline(pipeline=pipe)
         else:
-            return OpenAI(temperature=0)
+            return OpenAIChat(temperature=0)
     
     @retry(exceptions=openai.error.RateLimitError, tries=2, delay=60, back_off=2)
     def _send_prompt(self, qa: VectorDBQA, input_question: str) -> Any:
@@ -240,7 +241,7 @@ class TextSummarizer:
             output = self._send_prompt(qa, input_question)
             source_documents = " ".join([doc.page_content.replace("\n"," ") for doc in output["source_documents"]])
             # append input question, source document, and answers to output_aggregated
-            output_aggregated += input_question + "\n" + "Source documents: " + source_documents + "\n" + output["result"] + "\n\n"
+            output_aggregated += input_question + "\n" + "Source documents: " + source_documents + "\n" + "Output:" + "\n" + output["result"].strip() + "\n\n"
         return output_aggregated
     
     def summarize_text_from_file(self, input_file_path: str) -> None:
@@ -281,16 +282,26 @@ class TextSummarizer:
             with open(file_path, 'r') as f:
                 lines = f.readlines()
                 answer = []
+                question = []
+                output_flag = False
                 for line in lines:
                     if line.startswith('Q: '):
+                        output_flag = False 
                         if answer:
                             answers.append("\n".join(answer))
                             answer = []
-                        questions.append(line.strip().replace('Q: ', ''))
+                        question.append(line.strip().replace('Q: ', ''))
                     elif line.startswith("Source documents: "):
                         sources.append(line.strip().replace('Source documents: ', ''))
-                    else:
+                        if question:
+                            questions.append("\n".join(question))
+                            question = []
+                    elif line.startswith('Output:'):
+                        output_flag = True
+                    elif output_flag:
                         answer.append(line.strip())
+                    elif not output_flag and not line.startswith('Q: '):
+                        question.append(line.strip())
                 if answer:
                     answers.append("\n".join(answer))
             return questions, sources, answers
@@ -301,10 +312,10 @@ class TextSummarizer:
         file_paths = input_path.glob("*.txt")
         for file_path in file_paths:
             questions, sources, answers = extract_questions_sources_answers(file_path)
-            doi = file_path.name.replace(".txt","").replace("_","/")
-            data[doi] = {"questions": questions, "sources": sources, "answers": answers}
+            eid = file_path.name.replace(".txt","").replace("_","/")
+            data[eid] = {"questions": questions, "sources": sources, "answers": answers}
 
-        header = ["DOI"]
+        header = ["EID"]
         header.extend([question for question in data[str(list(data.keys())[0])]["questions"]])
         rows_questions_answer = [header]
         rows_questions_source = [header]    

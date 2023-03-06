@@ -9,23 +9,35 @@ from util.log_util import get_logger
 from typing import Union
 
 class PaperDownloader:
-    def __init__(self, doi_list: list, api_key:  Union[str, None], inst_token:  Union[str, None], output_folder: str):
-        self.doi_list = doi_list
-        
+    def __init__(self, api_key:  Union[str, None], inst_token:  Union[str, None]):
         # Initialize client
         self.client = ElsClient(api_key, accept = "text/xml")
         self.client.inst_token = inst_token
+        
+    def abstract_download(self, eid_list: list, output_folder: str) -> None:
+        # set local_dir to output_folder
         self.client.local_dir = output_folder
+        logger = get_logger(__name__)
+        ## ScienceDirect (abstract) document example using DOI
+        for eid in eid_list:
+            # input eid to get abstract     
+            eid_doc = AbsDoc(eid = eid) 
+            if eid_doc.read(self.client):
+                logger.info("Read eid_doc.title: " + eid_doc.title)
+                eid_doc.write()   
+            else:
+                logger.info("Failed to read: " + eid)
 
-    def download(self): 
+    def fulldoc_download(self, eid_list: list, output_folder: str) -> None: 
+        # set local_dir to output_folder
+        self.client.local_dir = output_folder
         logger = get_logger(__name__)
         ## ScienceDirect (full-text) document example using DOI
-        for doi in self.doi_list:
-            # input doi to get full text     
-            doi_doc = FullDoc(doi = doi) 
-            if doi_doc.read(self.client):
-                logger.info("Read doi_doc.title: " + doi_doc.title)
-                doi_doc.write()   
+        for eid in eid_list:
+            # input eid to get full text     
+            eid_doc = FullDoc(eid = eid) 
+            if eid_doc.read(self.client):
+                logger.info("Read eid_doc.title: " + eid_doc.title)
+                eid_doc.write()   
             else:
-                logger.info("Failed to read: " + doi)
-
+                logger.info("Failed to read: " + eid)
