@@ -6,6 +6,8 @@ from typing import Any
 from glob import glob 
 from tqdm import tqdm
 import csv
+import json
+from collections import defaultdict
 
 import faiss  # type: ignore
 import openai
@@ -21,6 +23,21 @@ from langchain.llms.huggingface_pipeline import HuggingFacePipeline
 from langchain.prompts import PromptTemplate
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores.faiss import FAISS
+from langchain.vectorstores import Chroma
+from langchain.chat_models import ChatOpenAI
+from langchain.chains.qa_with_sources.base import BaseQAWithSourcesChain
+from langchain.chains import VectorDBQAWithSourcesChain
+from langchain.prompts.chat import (
+    ChatPromptTemplate,
+    SystemMessagePromptTemplate,
+    AIMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
+from langchain.schema import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage
+)
 from rich import print
 from transformers import pipeline  # type: ignore
 
@@ -175,9 +192,7 @@ class TextSummarizer:
             )
 
         embeddings = self._embedding_from_selection()
-        docsearch: FAISS = FAISS.from_texts(chunked_text_list[:2], embeddings)
-        for text in chunked_text_list[2:]:
-            self._append_to_index(docsearch, text)
+        docsearch: FAISS = FAISS.from_texts(chunked_text_list, embeddings)
 
         faiss.write_index(docsearch.index, index_path.as_posix())
         with open(faiss_db, "wb") as f:
@@ -197,19 +212,23 @@ class TextSummarizer:
         search_index.index = index
         return search_index
         
-    def _prompt_from_question(self) -> PromptTemplate:
-        template = """
-        Instructions:
+    def _prompt_from_question(self) -> ChatPromptTemplate:
+        system_template="""Instructions:
         - Provide keywords and summary which should be relevant to answer the question strictly based on the provided context.
         - Provide detailed responses that relate to the question.
         - Answer "Not sure" if you are not sure about the answer.
-        - Context:
-        {context}
-        - Question:
-        ${question}"""
- 
+        - Some questions have “Example Answer:” to give a format for you to answer in, some of which are bullet points. Unless question specifies the number of bullet points you need to provide, the number of bullet points may vary depending on the information in the source document. Don't simply follow the number of bullet points provided in “Example Answer:”.
+        - “Example Answer:” might have dummy answers like “*XXX*” or “*TYPE*”. They are meant to be place-holders. So replace them with your own answers.
 
-        return PromptTemplate(input_variables=["context", "question"], template=template)
+        Begin!
+        ----------------
+        {context}"""
+        messages = [
+            SystemMessagePromptTemplate.from_template(system_template),
+            HumanMessagePromptTemplate.from_template("{question}")
+        ]
+        prompt = ChatPromptTemplate.from_messages(messages)
+        return prompt
     
     def _llm_provider(self) -> BaseLLM:
         if self.llm == "huggingface":
@@ -220,7 +239,7 @@ class TextSummarizer:
             )
             return HuggingFacePipeline(pipeline=pipe)
         else:
-            return OpenAIChat(temperature=0)
+            return ChatOpenAI(temperature=0)
     
     @retry(exceptions=openai.error.RateLimitError, tries=2, delay=60, back_off=2)
     def _send_prompt(self, qa: VectorDBQA, input_question: str) -> Any:
@@ -235,7 +254,12 @@ class TextSummarizer:
         search_index = self._load_index(index_dict["faiss_db"], index_dict["index_path"])
         llm = self._llm_provider()
         prompt = self._prompt_from_question()
-        qa = VectorDBQA.from_llm(llm=llm, prompt=prompt, vectorstore=search_index, return_source_documents = True)
+        chain_type_kwargs = {"prompt": prompt}
+        qa = VectorDBQA.from_chain_type(llm=llm, 
+                                        chain_type="stuff", 
+                                        vectorstore=search_index, 
+                                        chain_type_kwargs=chain_type_kwargs,
+                                        return_source_documents = True)
         output_aggregated = ""
         for input_question in self.input_question_list:
             output = self._send_prompt(qa, input_question)
@@ -272,7 +296,7 @@ class TextSummarizer:
             self.summarize_text_from_file(str(input_file_path))
             logger.info("Summarized: " + str(input_file_path.name)) 
 
-    def put_output_in_csv(self, output_file_path: str) -> None:
+    def put_output_in_files(self, output_file_path: str) -> None:
         # define helper function
         def extract_questions_sources_answers(file_path):
             questions = []
@@ -312,13 +336,14 @@ class TextSummarizer:
         file_paths = input_path.glob("*.txt")
         for file_path in file_paths:
             questions, sources, answers = extract_questions_sources_answers(file_path)
-            eid = file_path.name.replace(".txt","").replace("_","/")
-            data[eid] = {"questions": questions, "sources": sources, "answers": answers}
-
-        header = ["EID"]
+            doi = file_path.name.replace(".txt","").replace("_","/")
+            data[doi] = {"questions": questions, "sources": sources, "answers": answers}
+            
+        header = ["DOI"]
         header.extend([question for question in data[str(list(data.keys())[0])]["questions"]])
         rows_questions_answer = [header]
         rows_questions_source = [header]    
+        final_dict_list = []
         
         for key, value in data.items():
             # append a row for QA
@@ -331,6 +356,10 @@ class TextSummarizer:
             row_questions_source.extend(value["sources"])
             rows_questions_source.append(row_questions_source) 
             
+            # create dictionary for json
+            _final_dict = {_header: _row for _header, _row in zip(header, row_questions_answer)}
+            final_dict_list.append(_final_dict)
+        
         # save to the output_file_path: rows_questions_answer 
         with open(output_file_path, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
@@ -340,4 +369,10 @@ class TextSummarizer:
         with open(output_file_path.replace(".csv", "_source.csv"), 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerows(rows_questions_source)
+            
+        # save to json
+        with open(output_file_path.replace(".csv", ".json"), "w") as outfile:
+            for d in final_dict_list:
+                json.dump(d, outfile)
+                outfile.write('\n')
 

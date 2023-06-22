@@ -158,7 +158,7 @@ class Parser:
 
         # get EID (All the elments in the list will be under this EID)
         coredata = doc_xml_root.find("coredata", namespaces={None:ns[None]})
-        eid = coredata.find("eid", namespaces={"prism":ns["prism"]}).text
+        doi = coredata.find("prism:doi", namespaces={"prism":ns["prism"]}).text
 
         # get a title
         title = coredata.find("dc:title", namespaces={"dc":ns["dc"]}).text
@@ -171,9 +171,8 @@ class Parser:
         abstract = re.sub(" +", " ", "".join(head.xpath(".//ce:abstract//ce:simple-para/text()", namespaces={"ce":ns["ce"]}))).replace("\n", " ").strip()
 
         # get data availability
-        try: 
-            data_availability = re.sub(" +", " ", "".join(head.xpath(".//ce:data-availability//ce:para/text()", namespaces={"ce":ns["ce"]}))).replace("\n", " ").strip() 
-        except:
+        data_availability = re.sub(" +", " ", "".join(head.xpath(".//ce:data-availability//ce:para/text()", namespaces={"ce":ns["ce"]}))).replace("\n", " ").strip() 
+        if data_availability == "":
             data_availability = "Not mentioned"
             
         # find sections
@@ -223,13 +222,12 @@ class Parser:
             # split the text into chunks and add the title to each chunk when saving to a list
             _text_temp_chunk_list = self._split_text(_text_temp)
             _text_temp_chunk_list = [title + ": " + _text_chunk + "\n\n" for _text_chunk in _text_temp_chunk_list]
-            print(_text_temp_chunk_list)
             for _text_chunk in _text_temp_chunk_list:
                 text += _text_chunk 
             # else:
             #     text += re.sub(r'\[.*?\]', '', re.sub(" +", " ", etree.tostring(content, method="text", encoding="unicode").\
             #         replace("\n", " "))).replace(" .", ".").strip() + " " 
-        label_dict[eid] = text.strip()
+        label_dict[doi] = text.strip()
         return label_dict
 
     def parse_multiple_to_simple_dict(self) -> defaultdict:
@@ -257,8 +255,10 @@ class Parser:
         coredata = doc_xml_root.find("coredata", namespaces={None:ns[None]})
         eid = coredata.find("eid", namespaces={None:ns[None]}).text
         # get abstract
-        abstract = doc_xml_root.xpath(".//dc:description", namespaces={"dc": ns["dc"]})[0].xpath(".//ce:para", namespaces={"ce": ns["ce"]})[0].text
-        label_dict[eid] = abstract
+        abstract_root = doc_xml_root.xpath(".//dc:description", namespaces={"dc": ns["dc"]})[0].xpath(".//ce:para", namespaces={"ce": ns["ce"]})[0]
+        abstract_text = re.sub(r'\[.*?\]', '', re.sub(" +", " ", etree.tostring(abstract_root, method="text", encoding="unicode").\
+                replace("\n", " "))).replace(" .", ".").strip() 
+        label_dict[eid] = abstract_text
         return label_dict
 
     def parse_multiple_abstract(self):
