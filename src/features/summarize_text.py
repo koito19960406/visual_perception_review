@@ -2,21 +2,20 @@ import os
 import pickle
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Union
 from glob import glob 
 from tqdm import tqdm
 import csv
 import json
 from collections import defaultdict
-
+import pandas as pd
 import faiss  # type: ignore
 import openai
 import torch
+from langchain.output_parsers import PydanticOutputParser
 from langchain.llms import OpenAIChat
 from langchain import OpenAI, VectorDBQA
-from langchain.embeddings import HuggingFaceEmbeddings, HuggingFaceHubEmbeddings
-from langchain.embeddings.base import Embeddings
-from langchain.embeddings.cohere import CohereEmbeddings
+from langchain.chains import RetrievalQA
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.llms.base import BaseLLM
 from langchain.llms.huggingface_pipeline import HuggingFacePipeline
@@ -38,6 +37,8 @@ from langchain.schema import (
     HumanMessage,
     SystemMessage
 )
+from langchain.document_loaders import TextLoader, UnstructuredPDFLoader
+from langchain.output_parsers import RetryWithErrorOutputParser, OutputFixingParser
 from rich import print
 from transformers import pipeline  # type: ignore
 
@@ -47,6 +48,8 @@ from util.log_util import get_logger
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 logger = get_logger(__name__)
+# set level at ERROR to avoid printing too many logs
+logger.setLevel("ERROR")
 
 def create_faiss_db_path(cache_path: Path, text_file_name: str) -> Path:
     output_dir = cache_path / "index" / text_file_name
@@ -60,7 +63,7 @@ def create_index_path(cache_path: Path, text_file_name: str) -> Path:
     return output_dir / "docsearch.index"
 
 
-class TextSummarizer:
+class QAWithSourceReviwer:
     """
     Input: 
         folder that contains text files
@@ -72,11 +75,8 @@ class TextSummarizer:
     def __init__(self, 
                 question_list_text: str, 
                 openai_api_key = None,
-                huggingface_api_key = None, 
-                cache_path: str = "", 
-                embedding: str = "openai",
-                llm: str = "openai",
-                overwrite_index: bool = True) -> None:
+                cache_path: str = "",
+                output_parsers: Union[List[PydanticOutputParser], None] = None) -> None:
         """Input for the summarizer
 
         Args:
@@ -95,15 +95,11 @@ class TextSummarizer:
         if openai_api_key != None:
             os.environ['OPENAI_API_KEY'] = openai_api_key
             self._openai_api_key = openai_api_key
-        if huggingface_api_key != None:
-            os.environ['HUGGINGFACEHUB_API_TOKEN'] = huggingface_api_key
-            self._huggingface_api_key = huggingface_api_key
         with open(question_list_text, "r") as file:
             self._input_question_list: list = file.read().split("\n\n")
-        self._embedding = embedding
-        self._llm = llm
         self._cache_path = Path(cache_path)
-        self._overwrite_index = overwrite_index
+        self._output_parsers = output_parsers
+        self.error_files = []
         pass
 
     @property
@@ -114,32 +110,11 @@ class TextSummarizer:
         self._openai_api_key = str(openai_api_key)
         
     @property
-    def huggingface_api_key(self) -> str:
-        return self._huggingface_api_key    
-    @huggingface_api_key.setter
-    def huggingface_api_key(self, huggingface_api_key: str)  -> None:
-        self._huggingface_api_key = str(huggingface_api_key)
-        
-    @property
     def input_question_list(self) -> list:
         return self._input_question_list    
     @input_question_list.setter
     def input_question_list(self, input_question_list: list)  -> None:
         self._input_question_list = input_question_list
-    
-    @property
-    def embedding(self) -> str:
-        return self._embedding    
-    @embedding.setter
-    def embedding(self, embedding)  -> None:
-        self._embedding = embedding
-
-    @property
-    def llm(self) -> str:
-        return self._llm    
-    @llm.setter
-    def llm(self, llm)  -> None:
-        self._llm = llm
 
     @property
     def cache_path(self) -> Path:
@@ -147,232 +122,141 @@ class TextSummarizer:
     @cache_path.setter
     def cache_path(self, cache_path: str)  -> None:
         self._cache_path = Path(cache_path)
-    
+
+    def get_loader(self, input_file_path: str) -> Any:
+        if input_file_path.endswith(".pdf"):
+            loader = UnstructuredPDFLoader(input_file_path)
+        elif input_file_path.endswith(".txt"):
+            loader = TextLoader(input_file_path)
+        else:
+            raise ValueError("File type not supported")
+        return loader
+
     @property
-    def overwrite_index(self) -> bool:
-        return self._overwrite_index    
-    @overwrite_index.setter
-    def overwrite_index(self, overwrite_index: bool)  -> None:
-        self._overwrite_index = overwrite_index
-
-    def _split_text(self,text) -> list:
-        text_splitter = CharacterTextSplitter(separator=".\n\n", chunk_size=1000, chunk_overlap=0)
-        texts = text_splitter.split_text(text)
-        return [t for t in texts if t]
-
-    @retry(exceptions=openai.error.RateLimitError, tries=2, delay=60, back_off=2)
-    def _append_to_index(self, docsearch: FAISS, text: str) -> None:
-        docsearch.add_texts([text])
+    def output_parsers(self) -> Any:
+        # make sure it has the same length as input_question_list
+        if self._output_parsers == None:
+            self._output_parsers = [None for i in range(len(self.input_question_list))]
+        else:
+            if len(self._output_parsers) != len(self.input_question_list):
+                raise ValueError("output_parsers must have the same length as input_question_list")
+        return self._output_parsers
+    @output_parsers.setter
+    def output_parsers(self, output_parsers: list)  -> None:
+        self._output_parsers = output_parsers
     
-    def _embedding_from_selection(self) -> Embeddings:
-        if self.embedding == "huggingface":
-            return HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-        elif self.embedding == "huggingface-hub":
-            return HuggingFaceHubEmbeddings(repo_id="sentence-transformers/all-mpnet-base-v2",
-                                            huggingfacehub_api_token=self.huggingface_api_key)
-        elif self.embedding == "cohere":
-            return CohereEmbeddings()
-        else:
-            return OpenAIEmbeddings(openai_api_key=self.openai_api_key)
-
-    def _create_index(self, text_file_name: str, chunked_text_list: list) -> dict:
-        # set paths to faiss database and index
-        faiss_db = create_faiss_db_path(self.cache_path, text_file_name)
-        index_path = create_index_path(self.cache_path, text_file_name)
-
-        if not self.overwrite_index and faiss_db.exists():
-            logger.info("Index already exists at %s", faiss_db)
-            return {"index_path": index_path, "faiss_db": faiss_db}
-        else:
-            logger.info(
-                "Creating index at %s either because overwrite_index == %s or index file exists == %s",
-                faiss_db,
-                self.overwrite_index,
-                faiss_db.exists(),
-            )
-
-        embeddings = self._embedding_from_selection()
-        docsearch: FAISS = FAISS.from_texts(chunked_text_list, embeddings)
-
-        faiss.write_index(docsearch.index, index_path.as_posix())
-        with open(faiss_db, "wb") as f:
-            pickle.dump(docsearch, f)
-
-        return {"index_path": index_path, "faiss_db": faiss_db}
-
-    def _load_index(self, faiss_db: Path, index_path: Path) -> int:
-        if not faiss_db.exists():
-            raise FileNotFoundError(f"FAISS DB file not found: {faiss_db}")
-
-        print(f"[bold]Loading[/bold] index from {faiss_db}")
-        index = faiss.read_index(index_path.as_posix())
-        with open(faiss_db, "rb") as f:
-            search_index = pickle.load(f)
-
-        search_index.index = index
-        return search_index
+    def qa_from_file(self, input_file_path: str) -> list:
+        # get loader and split text
+        loader = self.get_loader(input_file_path)
+        documents = loader.load()
+        text_splitter = CharacterTextSplitter(chunk_size=5000, chunk_overlap=0)
+        texts = text_splitter.split_documents(documents)
+        # embed text and create index
+        embeddings = OpenAIEmbeddings(client=None)
+        persistent_directory = self.cache_path / "index" / Path(input_file_path).name 
+        persistent_directory.mkdir(parents=True, exist_ok=True)
+        docsearch = Chroma.from_documents(texts, embeddings, persist_directory = str(persistent_directory))
         
-    def _prompt_from_question(self) -> ChatPromptTemplate:
-        system_template="""Instructions:
-        - Provide keywords and summary which should be relevant to answer the question strictly based on the provided context.
-        - Provide detailed responses that relate to the question.
-        - Answer "Not sure" if you are not sure about the answer.
-        - Some questions have “Example Answer:” to give a format for you to answer in, some of which are bullet points. Unless question specifies the number of bullet points you need to provide, the number of bullet points may vary depending on the information in the source document. Don't simply follow the number of bullet points provided in “Example Answer:”.
-        - “Example Answer:” might have dummy answers like “*XXX*” or “*TYPE*”. They are meant to be place-holders. So replace them with your own answers.
+        prompt_template = """Use the following pieces of context to answer the question at the end. If you don't know the answer, just say that you don't know, don't try to make up an answer.
 
-        Begin!
-        ----------------
-        {context}"""
-        messages = [
-            SystemMessagePromptTemplate.from_template(system_template),
-            HumanMessagePromptTemplate.from_template("{question}")
-        ]
-        prompt = ChatPromptTemplate.from_messages(messages)
-        return prompt
+        {context}
+
+        Question: {question}
+        {format_instructions}
+        Answer:"""
+        output_list = []
+        for input_question, output_parser in zip(self.input_question_list, self.output_parsers):
+            # set up qa
+            if output_parser != None:
+                format_instructions = output_parser.get_format_instructions()
+            else:
+                format_instructions = ""
+            PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"],
+                                    partial_variables={"format_instructions": format_instructions})
+            chain_type_kwargs = {"prompt": PROMPT}
+            retriever = docsearch.as_retriever()
+            from openai import OpenAIError
+
+            max_tokens = 2000
+            step = 100
+
+            while max_tokens > step:
+                try:
+                    qa = RetrievalQA.from_chain_type(llm=ChatOpenAI(client=None, openai_api_key=self.openai_api_key, temperature=0, model="gpt-3.5-turbo-16k", max_tokens=max_tokens),
+                                                    chain_type="stuff", retriever=retriever, chain_type_kwargs=chain_type_kwargs, return_source_documents=True)
+                    # If the API call is successful, break the loop
+                    break
+                except OpenAIError as e:
+                    print(f"Error at max_tokens = {max_tokens}: {str(e)}")
+                    max_tokens -= step
+            try:
+                output = qa({"query":input_question})
+            except:
+                if input_file_path not in self.error_files:
+                    self.error_files.append(input_file_path)
+                output_list.append({"result": "Error", "source_documents": "Error"})
+                continue
+            # parse the output with RetryWithErrorOutputParser
+            # retry_output_parser = OutputFixingParser.from_llm(parser=output_parser, llm=ChatOpenAI(client = None, openai_api_key=self.openai_api_key, temperature = 0, model = "gpt-3.5-turbo"))
+
+            # output["result"] = retry_output_parser.parse_with_prompt(output["result"], PROMPT.format_prompt(context=retriever.get_relevant_documents(input_question), question=input_question)).\
+            #     json()
+            output["source_documents"] = " ".join([doc.page_content.replace("\n"," ") for doc in output["source_documents"]])
+            # append to output_list
+            output_list.append(output)
+        return output_list
     
-    def _llm_provider(self) -> BaseLLM:
-        if self.llm == "huggingface":
-            pipe = pipeline(
-                "text2text-generation",
-                model="pszemraj/long-t5-tglobal-base-16384-book-summary",
-                device=0 if torch.cuda.is_available() else -1,
-            )
-            return HuggingFacePipeline(pipeline=pipe)
+
+    def qa_from_folder(self, input_folder_path: str, output_json_file_path: str) -> None:
+        # load a list of text or PDF files
+        path = Path(input_folder_path)
+        txt_files = list(path.glob("*.txt"))
+        pdf_files = list(path.glob("*.pdf"))
+        file_list = txt_files + pdf_files
+
+        # Load previously processed data if exists
+        if Path(output_json_file_path).exists():
+            with open(output_json_file_path, "r") as infile:
+                output_dict = json.load(infile)
         else:
-            return ChatOpenAI(temperature=0)
-    
-    @retry(exceptions=openai.error.RateLimitError, tries=2, delay=60, back_off=2)
-    def _send_prompt(self, qa: VectorDBQA, input_question: str) -> Any:
-        result = qa({"query": input_question})
-        return result
-        # return qa.run(query=input_question)
-    
-    def _ask_question(self, text_file_name: str, chunked_text_list: list) -> str:
-        # creat index
-        index_dict = self._create_index(text_file_name, chunked_text_list)
-        # load index
-        search_index = self._load_index(index_dict["faiss_db"], index_dict["index_path"])
-        llm = self._llm_provider()
-        prompt = self._prompt_from_question()
-        chain_type_kwargs = {"prompt": prompt}
-        qa = VectorDBQA.from_chain_type(llm=llm, 
-                                        chain_type="stuff", 
-                                        vectorstore=search_index, 
-                                        chain_type_kwargs=chain_type_kwargs,
-                                        return_source_documents = True)
-        output_aggregated = ""
-        for input_question in self.input_question_list:
-            output = self._send_prompt(qa, input_question)
-            source_documents = " ".join([doc.page_content.replace("\n"," ") for doc in output["source_documents"]])
-            # append input question, source document, and answers to output_aggregated
-            output_aggregated += input_question + "\n" + "Source documents: " + source_documents + "\n" + "Output:" + "\n" + output["result"].strip() + "\n\n"
-        return output_aggregated
-    
-    def summarize_text_from_file(self, input_file_path: str) -> None:
-        # load input_file_path as strings
-        with open(input_file_path, "r") as file:
-            text = file.read() 
-        text_file_name = Path(input_file_path).name
-        # create output_file_path
-        output_dir = self.cache_path / ("embedding_" + self.embedding + "_llm_" + self.llm)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        output_file = output_dir / text_file_name
-        # stop here if the output file already exists
-        if output_file.exists():
-            return
-        # get chunked text
-        chunked_text_list = self._split_text(text) 
-        # ask questions
-        output = self._ask_question(text_file_name, chunked_text_list)
-        # save the output to output_file_path as text file
-        with open(output_file, "w") as file:
-            file.write(output)
+            output_dict = defaultdict(list)
 
-    def summarize_text_from_folder(self, input_folder_path: str) -> None:
-        # load a list of text files
-        text_list = list(Path(input_folder_path).glob("*.txt"))
         # loop through them to ask questions
-        for input_file_path in tqdm(text_list, desc="summarizing papers"):
-            self.summarize_text_from_file(str(input_file_path))
-            logger.info("Summarized: " + str(input_file_path.name)) 
+        for input_file_path in tqdm(file_list, desc="running Q&A with papers"):
+            # Checkpointing: skip if the result already exists
+            if input_file_path.name not in output_dict:
+                output_dict[input_file_path.name] = self.qa_from_file(str(input_file_path))
+                logger.info("Ran Q&A for " + str(input_file_path.name)) 
 
-    def put_output_in_files(self, output_file_path: str) -> None:
-        # define helper function
-        def extract_questions_sources_answers(file_path):
-            questions = []
-            sources = []
-            answers = []
+                # save intermediary results as json
+                with open(output_json_file_path, "w") as outfile:
+                    json.dump(output_dict, outfile)
 
-            with open(file_path, 'r') as f:
-                lines = f.readlines()
-                answer = []
-                question = []
-                output_flag = False
-                for line in lines:
-                    if line.startswith('Q: '):
-                        output_flag = False 
-                        if answer:
-                            answers.append("\n".join(answer))
-                            answer = []
-                        question.append(line.strip().replace('Q: ', ''))
-                    elif line.startswith("Source documents: "):
-                        sources.append(line.strip().replace('Source documents: ', ''))
-                        if question:
-                            questions.append("\n".join(question))
-                            question = []
-                    elif line.startswith('Output:'):
-                        output_flag = True
-                    elif output_flag:
-                        answer.append(line.strip())
-                    elif not output_flag and not line.startswith('Q: '):
-                        question.append(line.strip())
-                if answer:
-                    answers.append("\n".join(answer))
-            return questions, sources, answers
-        # initialize dictionary
-        data = {}
-        # get files as list
-        input_path = self.cache_path / ("embedding_" + self.embedding + "_llm_" + self.llm)
-        file_paths = input_path.glob("*.txt")
-        for file_path in file_paths:
-            questions, sources, answers = extract_questions_sources_answers(file_path)
-            doi = file_path.name.replace(".txt","").replace("_","/")
-            data[doi] = {"questions": questions, "sources": sources, "answers": answers}
-            
-        header = ["DOI"]
-        header.extend([question for question in data[str(list(data.keys())[0])]["questions"]])
-        rows_questions_answer = [header]
-        rows_questions_source = [header]    
-        final_dict_list = []
-        
-        for key, value in data.items():
-            # append a row for QA
-            row_questions_answer = [key]
-            row_questions_answer.extend(value["answers"])
-            rows_questions_answer.append(row_questions_answer)
-
-            # append a row for question and source
-            row_questions_source = [key]
-            row_questions_source.extend(value["sources"])
-            rows_questions_source.append(row_questions_source) 
-            
-            # create dictionary for json
-            _final_dict = {_header: _row for _header, _row in zip(header, row_questions_answer)}
-            final_dict_list.append(_final_dict)
-        
-        # save to the output_file_path: rows_questions_answer 
-        with open(output_file_path, 'w', newline='', encoding='utf-8') as f:
+        # save as csv with columns: DOI, questions (answers)
+        header = ["file_name"]
+        header.extend([question for question in self.input_question_list])
+        rows = [header]
+        for key, value in output_dict.items():
+            row = [key]
+            row.extend([qa["result"] for qa in value])
+            rows.append(row)
+        with open(output_json_file_path.replace(".json", ".csv"), 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerows(rows_questions_answer)
-            
-        # save to the output_file_path: rows_questions_source 
-        with open(output_file_path.replace(".csv", "_source.csv"), 'w', newline='', encoding='utf-8') as f:
+            writer.writerows(rows)
+        
+        # save as csv with columns: DOI, questions (sources)
+        header = ["file_name"]
+        header.extend([question for question in self.input_question_list])
+        rows = [header]
+        for key, value in output_dict.items():
+            row = [key]
+            row.extend([qa["source_documents"] for qa in value])
+            rows.append(row)
+        with open(output_json_file_path.replace(".json", "_source.csv"), 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
-            writer.writerows(rows_questions_source)
-            
-        # save to json
-        with open(output_file_path.replace(".csv", ".json"), "w") as outfile:
-            for d in final_dict_list:
-                json.dump(d, outfile)
-                outfile.write('\n')
+            writer.writerows(rows)
 
+        # save self.error_files as csv
+        with open(output_json_file_path.replace(".json", "_error.csv"), 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerows(self.error_files)

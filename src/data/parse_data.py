@@ -31,8 +31,9 @@ class Parser:
         The parsing is conducted using regex expressions.
     """
     
-    def __init__(self, doc_list: list) -> None:
+    def __init__(self, doc_list: list, unavailable_papers_csv_path: str) -> None:
         self._doc_list = doc_list
+        self.unavailable_papers_csv_path = unavailable_papers_csv_path
         
     @property
     def doc_list(self):
@@ -137,7 +138,9 @@ class Parser:
         for doc in self.doc_list:
             root = etree.parse(doc).getroot()
             label_dict = self._parse_single_to_nested_dict(root)
-            label_dict_joined.update(label_dict)
+            # check the length of the dictionary
+            if len(label_dict) > 0:
+                label_dict_joined.update(label_dict)
             
         return label_dict_joined
     
@@ -177,10 +180,19 @@ class Parser:
             
         # find sections
         body = doc_xml_root.xpath(f"//*[translate(name(), 'FULLTEXTR', 'fulltextr')='body']")
+        # if there is no body, then return an empty dictionary
+        if len(body) == 0:
+            # open file and append doi to the end of the file in the first column
+            with open(self.unavailable_papers_csv_path, "a") as file:
+                # append title, doi, and empty strong to the end of the file in the first, second, and third column
+                # make sure to escape commas in the title
+                file.write(f"{title.replace(',', '')},{doi},\n")
+            return label_dict
+
         section_element_root = body[0].find("ce:sections", namespaces = {"ce":ns["ce"]}).findall("ce:section", namespaces={"ce": ns["ce"]})  
         content_list = body[0].xpath(".//ce:section-title|.//ce:para|.//ce:label", namespaces={"ce": ns["ce"]})
         # store all the text content to text
-        text = "Title: " + title + "\n\n" + "Keywords: " + ", ".join(keywords) +\
+        text = "DOI: " + doi + "\n\n" + "Title: " + title + "\n\n" + "Keywords: " + ", ".join(keywords) +\
             "\n\n" + "Abstract: " + abstract + "\n\n" + "Data availability: " + data_availability + "\n\n" + "Paper content:\n"    
         # set section title flag and subsection title flag
         section_title_flag = False

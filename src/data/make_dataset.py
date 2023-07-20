@@ -8,6 +8,7 @@ import os
 from glob import glob
 import json
 from typing import Union
+from datetime import date
 
 from download_paper import PaperDownloader
 from parse_data import Parser
@@ -21,9 +22,8 @@ from asr_csv2ris import CSV2RISConverter
 def main(output_path: str, 
         api_key: Union[str, None], 
         inst_token: Union[str, None],
-        initial_input_filepath: str = '', 
+        initial_input_folder: str = '', 
         abstract_filtered_input_filepath: str = '',
-        filtered_input_filepath: str = '',
         ris_filepath: str = ''):
     """ Runs data processing scripts to turn raw data from (../raw) into
         cleaned data ready to be analyzed (saved in ../processed).
@@ -32,36 +32,19 @@ def main(output_path: str,
     logger.info('making final data set from raw data')
     
     # initialize PaperDownloader
-    paper_downloader = PaperDownloader(api_key, inst_token) 
+    unavailable_paper_csv_path = str(Path(output_path) / "unavailable_papers.csv")
+    paper_downloader = PaperDownloader(api_key, inst_token, unavailable_paper_csv_path) 
     
-    if initial_input_filepath != '':
-        # read csv
-        abs_df = pl.read_csv(initial_input_filepath)
-        abs_eid_list = (abs_df.
-                    select("EID").
-                    to_series().
-                    to_list())
-        
-        # make output folders
-        abstract_output_folder = Path(output_path) / "abstracts"
-        abstract_output_folder.mkdir(parents=True, exist_ok=True)
-        
-        # download abstracts
-        paper_downloader.abstract_download(abs_eid_list, str(abstract_output_folder))
-        logger.info('downloaded papers')
-
-        # initialize Parser
-        doc_list = list(abstract_output_folder.glob("*.xml"))
-        parser = Parser(doc_list)
-        label_dict_joined = parser.parse_multiple_abstract()
-        label_dict_joined = dict(label_dict_joined)
-        
-        # convert to polars to df and join  save to csv
-        df = (pl.DataFrame(list(label_dict_joined.items()), ["DOI", "abstract"]).
-            join(abs_df, on="DOI", how="left"))
-        df.write_csv(f"{abstract_output_folder}/abstracts.csv") 
+    # loop through initial_input_folder and get unique list of papers
+    paper_list = [pl.read_csv(f, infer_schema_length=10000) for f in glob(initial_input_folder + "/*.csv")]
+    # read csv files and concatenate
+    paper_df = pl.concat(paper_list)
+    # drop duplicates
+    paper_df = paper_df.unique(subset=["EID"])
+    # save to the same folder as abstract_filtered_input_filepath
+    paper_df.write_csv(Path(abstract_filtered_input_filepath).parent / ("scopus_input.csv"))
     
-    if (abstract_filtered_input_filepath != ''):
+    if abstract_filtered_input_filepath != '':
         # load the filtered papers
         paper_filter = PaperFilter(abstract_filtered_input_filepath)
         input_paper_df = paper_filter.filter_paper()
@@ -71,33 +54,25 @@ def main(output_path: str,
             input_paper_df.write_csv(abstract_filtered_input_filepath[:-5] + ".csv")
             csv2ris = CSV2RISConverter(abstract_filtered_input_filepath[:-5] + ".csv", ris_filepath)
             csv2ris.run()
-            
         
-    if filtered_input_filepath != '':
-        input_paper_df = pl.read_csv(filtered_input_filepath)
-        # save to csv and convert to ris
-        if filtered_input_filepath[-5:] == ".xlsx":
-            input_paper_df.write_csv(filtered_input_filepath[:-5] + ".csv")
-            csv2ris = CSV2RISConverter(filtered_input_filepath[:-5] + ".csv", ris_filepath)
-            csv2ris.run()
-        
-    if (abstract_filtered_input_filepath != '') | (filtered_input_filepath != ''):
         # get DOI and link to dowlnoad full text and store link for unavailable papers
         full_doi_link_df = (input_paper_df.
-                    select(["DOI","Link"]))
+                    select(["DOI","Link", "Title"]))
         # make output folders
-        raw_paper_output_folder = Path(output_path) / "raw_papers"
-        raw_paper_output_folder.mkdir(parents=True, exist_ok=True)
+        xml_paper_output_folder = Path(output_path) / "xml"
+        xml_paper_output_folder.mkdir(parents=True, exist_ok=True)
+        pdf_paper_output_folder = Path(output_path) / "pdf"
+        pdf_paper_output_folder.mkdir(parents=True, exist_ok=True)
         paper_output_folder = Path(output_path) / "papers"
         paper_output_folder.mkdir(parents=True, exist_ok=True)
 
         # download papers
-        paper_downloader.fulldoc_download(full_doi_link_df, str(raw_paper_output_folder))
+        paper_downloader.fulldoc_download(full_doi_link_df, str(xml_paper_output_folder), str(pdf_paper_output_folder))
         logger.info('downloaded papers')
 
         # initialize Parser
-        doc_list = list(raw_paper_output_folder.glob("*.xml"))
-        parser = Parser(doc_list)
+        doc_list = list(xml_paper_output_folder.glob("*.xml"))
+        parser = Parser(doc_list, unavailable_paper_csv_path)
         label_dict_joined = parser.parse_multiple_to_simple_dict()
         label_dict_joined = dict(label_dict_joined)
         # use the map function to write each paper content to a file
@@ -109,9 +84,8 @@ if __name__ == '__main__':
     project_dir = Path(__file__).resolve().parents[2]
 
     # input and output path
-    filtered_input_filepath = "data/external/scopus_filtered.csv"
-    abstract_filtered_input_filepath = "data/external/asreview_dataset_visual-urban-perception-2022-2023.xlsx"
-    initial_input_filepath = "data/external/scopus_initial.csv"
+    initial_input_folder = "data/external/scopus/"
+    abstract_filtered_input_filepath = "data/external/asreview_dataset_all_visual-urban-perception-2023-07-09-2023-07-17.xlsx"
     ris_filepath = "data/external/scopus_filtered.ris"
     output_path = "data/raw/"
     if not os.path.exists(output_path):
@@ -122,7 +96,7 @@ if __name__ == '__main__':
     elsevier_api_key = os.getenv('ELSEVIER_API_KEY')
     inst_token = os.getenv('INST_TOKEN')
     main(output_path, elsevier_api_key, inst_token, 
-        # initial_input_filepath=initial_input_filepath, 
+        initial_input_folder=initial_input_folder, 
         abstract_filtered_input_filepath = abstract_filtered_input_filepath,
         ris_filepath = ris_filepath
         )
