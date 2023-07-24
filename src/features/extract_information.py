@@ -13,14 +13,43 @@ from util.log_util import get_logger
 logger = get_logger(__name__)
 
 class InfoExtracter:
-    def __init__(self, input_csv_filepath: str, output_folder_path: str):
-        input_json_path = input_csv_filepath.replace(".csv", ".json")
-        self.input_df = pl.read_ndjson(input_json_path)
+    def __init__(self, initial_input_csv: str, input_csv_filepath: str, output_folder_path: str):
+        self.initial_input_df = pd.read_csv(initial_input_csv)
+        self.input_df = pd.read_csv(input_csv_filepath)
         # get the column names as a list
         # rename columns with 0, 1, 2, ...
         new_column_names = [str(i) for i in range(len(self.input_df.columns))]
         self.input_df.columns = new_column_names
         self.output_folder_path = output_folder_path
+        
+    def correct_string_format(self, s):
+        # Extract the title part from the string
+        match = re.search(r'"title": (.+)}', s)
+        if match is not None:  # check if match found
+            start, end = match.span(1)
+            # Remove existing double quotes
+            removed_quotes_s = s[start:end].replace('"', '')
+            # Put the value of "title" within quotes and replace the original in s
+            corrected_s = s[:start] + '"' + removed_quotes_s + '"' + s[end:]
+            return corrected_s
+        else:
+            return s  # return the original string if no match is found
+
+
+    def check_unaswered_papers(self):
+        input_df = self.input_df
+        initial_input_df = self.initial_input_df
+        input_df['label_dict'] = input_df["1"].apply(self.correct_string_format)
+        input_df["label_dict"] = input_df['label_dict'].apply(lambda x: ast.literal_eval(x))
+        input_df = input_df.join(pd.json_normalize(input_df["label_dict"]))
+        # replace "," with "" in title
+        input_df["title"] = input_df["title"].str.replace(",","")
+        initial_input_df["Title"] = initial_input_df["Title"].str.replace(",","").str.replace('"', '')
+        remaining_df = initial_input_df[~initial_input_df["DOI"].isin(input_df["doi"]) &\
+            ~initial_input_df["DOI"].isin(input_df["0"].str.replace(".txt", "").str.replace('_', '/')) &\
+                ~initial_input_df["Title"].isin(input_df["title"])]
+        # save as csv
+        remaining_df.to_csv(self.output_folder_path + "unanswered_papers.csv")
         
     def get_summary(self):
         def extract_summary(text):

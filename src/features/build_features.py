@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from dotenv import find_dotenv, load_dotenv
 import polars as pl
+import pandas as pd
 import os 
 import glob
 import json
@@ -37,9 +38,6 @@ def main(initial_input_csv: str, input_filepath: str, temp_output_path: str, fin
     logger = get_logger(__name__)
     # set level at ERROR to avoid printing too many logs
     logger.setLevel("ERROR")
-
-    # load initial input csv
-    initial_input_df = pl.read_csv(initial_input_csv, infer_schema_length=10000)
     
     # summarize texts
     reviewer = QAWithSourceReviwer(question_text_path, 
@@ -51,42 +49,37 @@ def main(initial_input_csv: str, input_filepath: str, temp_output_path: str, fin
     # save qa results with today's date
     # today = date.today()
     reviewer.qa_from_folder(input_filepath, os.path.join(temp_output_path, "qa_result_2023-07-19.json"))
-    # check if there are any papers that are not answered by checking DOI and title
-    # store the list of unanswered papers based on initial_input_df
-    qa_result_df = pl.read_csv(os.path.join(temp_output_path, "qa_result_2023-07-19.csv"))
-    # replace "," with "" in title
-    qa_result_df["Title"] = qa_result_df["Title"].str.replace(",","")
-    remaining_df = (initial_input_df.filter(~pl.col("DOI").is_in(qa_result_df["DOI"])).\
-                    filter(~pl.col("Title").is_in(qa_result_df["Title"])))
-    # save as csv
-    remaining_df.write_csv(os.path.join(temp_output_path, "unanswered_papers" + str(today) + ".csv"))
+    
     # extract information
-    info_extracter = InfoExtracter(str(output_csv_path), final_output_path)
-    info_extracter.get_summary()
-    info_extracter.get_aspect()
-    info_extracter.get_location()
-    info_extracter.get_extent()
-    info_extracter.get_image_data_type()
-    info_extracter.get_subjective_data_type()
-    info_extracter.get_subjective_data_source()
-    info_extracter.get_subjective_data_size()
-    info_extracter.get_other_sensory_data()
-    info_extracter.get_type_of_research()
-    info_extracter.get_type_of_research_detail()
-    info_extracter.get_cv_model_name()
-    info_extracter.get_cv_model_purpose()
-    info_extracter.get_cv_model_training()
-    info_extracter.get_code_availability()
-    info_extracter.get_data_availability()
-    info_extracter.get_irb()
-    info_extracter.get_limitation_future_opportunity()
+    info_extracter = InfoExtracter(initial_input_csv, 
+                                os.path.join(temp_output_path,"qa_result_2023-07-19.csv"), 
+                                final_output_path)
+    info_extracter.check_unaswered_papers()
+    # info_extracter.get_summary()
+    # info_extracter.get_aspect()
+    # info_extracter.get_location()
+    # info_extracter.get_extent()
+    # info_extracter.get_image_data_type()
+    # info_extracter.get_subjective_data_type()
+    # info_extracter.get_subjective_data_source()
+    # info_extracter.get_subjective_data_size()
+    # info_extracter.get_other_sensory_data()
+    # info_extracter.get_type_of_research()
+    # info_extracter.get_type_of_research_detail()
+    # info_extracter.get_cv_model_name()
+    # info_extracter.get_cv_model_purpose()
+    # info_extracter.get_cv_model_training()
+    # info_extracter.get_code_availability()
+    # info_extracter.get_data_availability()
+    # info_extracter.get_irb()
+    # info_extracter.get_limitation_future_opportunity()
     
 if __name__ == '__main__':
     # not used in this stub but often useful for finding various files
     project_dir = Path(__file__).resolve().parents[2]
 
     # input and output path
-    initial_input_csv = "data/external/scopus_input.csv"
+    initial_input_csv = "data/external/asreview_dataset_all_visual-urban-perception-2023-07-09-2023-07-17.csv"
     question_text_path = "data/external/question_list_text copy.txt"
     input_path = "data/raw/all_papers"
     # Create list of classes
