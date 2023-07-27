@@ -6,6 +6,11 @@ import re
 from pathlib import Path
 import spacy
 import ast
+from tqdm.auto import tqdm
+import requests
+from geopy.exc import GeocoderTimedOut, GeocoderUnavailable 
+
+tqdm.pandas()
 
 from util.log_util import get_logger
 
@@ -20,6 +25,8 @@ class InfoExtracter:
         # rename columns with 0, 1, 2, ...
         new_column_names = [str(i) for i in range(len(self.input_df.columns))]
         self.input_df.columns = new_column_names
+        if not Path(output_folder_path).exists():
+            Path(output_folder_path).mkdir(parents=True, exist_ok=True)
         self.output_folder_path = output_folder_path
         
     def correct_string_format(self, s):
@@ -35,10 +42,13 @@ class InfoExtracter:
         else:
             return s  # return the original string if no match is found
 
-
     def check_unaswered_papers(self):
-        input_df = self.input_df
-        initial_input_df = self.initial_input_df
+        # check if the file exists
+        if Path(self.output_folder_path + "unanswered_papers.csv").exists():
+            logger.info("unanswered_papers.csv already exists. Skipping this step.")
+            return
+        input_df = self.input_df.copy()
+        initial_input_df = self.initial_input_df.copy()
         input_df['label_dict'] = input_df["1"].apply(self.correct_string_format)
         input_df["label_dict"] = input_df['label_dict'].apply(lambda x: ast.literal_eval(x))
         input_df = input_df.join(pd.json_normalize(input_df["label_dict"]))
@@ -50,200 +60,143 @@ class InfoExtracter:
                 ~initial_input_df["Title"].isin(input_df["title"])]
         # save as csv
         remaining_df.to_csv(self.output_folder_path + "unanswered_papers.csv")
+        logger.info("unanswered_papers.csv saved")
         
     def get_summary(self):
-        def extract_summary(text):
-            pattern = r'\d+\. .*'  # matches lines starting with a number followed by a period
-            matches = re.findall(pattern, text)
-            return " ".join(matches).replace("\n", " ")
-            
-        logger.info("Extracting summary")
-        
         # check if the file exists
         if Path(self.output_folder_path + "summary.csv").exists():
             logger.info("summary.csv already exists. Skipping this step.")
             return
-        
-        summary_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("1")
-                .apply(lambda x: extract_summary(x))
-                .alias("summary")
-            ])
-            .select(["DOI", "summary"]))
+        summary_df = self.input_df[["0", "2"]]
+        summary_df['label_dict'] = summary_df.iloc[:,1]
+        summary_df["label_dict"] = summary_df['label_dict'].apply(lambda x: ast.literal_eval(x))
+        summary_df = summary_df.join(pd.json_normalize(summary_df["label_dict"]))
+        summary_df["summary"] = summary_df["summary"].apply(lambda x: ' '.join(x))
+        summary_df = summary_df[["0", "summary"]]
         # save the output
-        summary_df.write_csv(self.output_folder_path + "summary.csv")
+        summary_df.to_csv(self.output_folder_path + "summary.csv")
         logger.info("summary.csv saved")  
 
     def get_aspect(self):
-        def extract_aspect(text):
-            # Regular expression pattern to match any words after "Aspect:"
-            pattern = r"Aspect:\s*(.*)"
-            # Extract words after "Aspect:"
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                words_after_aspect = match.group(1)
-                return words_after_aspect.lower().replace(".", "").strip()
-            else:
-                return "None"
-            
-        logger.info("Extracting aspect")
-        
         # check if the file exists
         if Path(self.output_folder_path + "aspect.csv").exists():
             logger.info("aspect.csv already exists. Skipping this step.")
             return
-        
-        aspect_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("1")
-                .apply(lambda x: extract_aspect(x))
-                .alias("aspect")
-            ])
-            .select(["DOI", "aspect"]))
+        aspect_df = self.input_df[["0", "2"]]
+        aspect_df['label_dict'] = aspect_df.iloc[:,1]
+        aspect_df["label_dict"] = aspect_df['label_dict'].apply(lambda x: ast.literal_eval(x))
+        aspect_df = aspect_df.join(pd.json_normalize(aspect_df["label_dict"]))
+        aspect_df = aspect_df[["0", "aspect"]]
         # save the output
-        aspect_df.write_csv(self.output_folder_path + "aspect.csv")
+        aspect_df.to_csv(self.output_folder_path + "aspect.csv")
+        logger.info("aspect.csv saved")  
+        # save the output
+        aspect_df.to_csv(self.output_folder_path + "aspect.csv")
         logger.info("aspect.csv saved") 
     
     def get_location(self):
         # define a function to extract location
         def extract_location(text):
-            # create a list of cities and countries
-            city_country_list = []
-            places = GeoText(text)
-            cities = places.cities
-            countries = places.countries
-            if len(countries) > 0:
-                for country in countries:
-                    # get cities in the country
-                    _cities = GeoText(text, country).cities
-                    # store in city_country_list
-                    if len(_cities) > 0:
-                        city_country_list.extend([_city + ", " + country for _city in _cities])
-                    else:
-                        city_country_list.append(country)
-                    # remove cities from cities list
-                    cities = [x for x in cities if x not in _cities]        
-            if len(cities) > 0:
-                city_country_list.extend(cities)
+            # remove "not mentioned", "not specified", "not applicable"
+            text = text.lower()
+            text = text.replace("not mentioned", "").replace("not specified", "").replace("not applicable", "")
             # create a geocoder object
             geolocator = Nominatim(user_agent="my-app")
-            
-            # loop through cities and get coordinates
-            coordinates_list = []
-            for city_country in city_country_list:
-                # geocode the city
-                location = geolocator.geocode(city_country)
-                # get the latitude and longitude
+            try:
+                location = geolocator.geocode(text)
+            except (requests.exceptions.ReadTimeout, GeocoderTimedOut, TypeError, GeocoderUnavailable):
+                try:
+                    location = geolocator.geocode(text.split(",")[0])
+                except:
+                    print("Got an error for ", text)
+                    return None
+            if location is not None:
+                lat = location.latitude
+                lon = location.longitude
+                return lat, lon
+            else:
+                # try with only the country name
+                location = geolocator.geocode(text.split(",")[0])
                 if location is not None:
                     lat = location.latitude
                     lon = location.longitude
-                    # store in city_country_list
-                    coordinates_list.append(str(lat) + ", " + str(lon))
+                    return lat, lon
                 else:
-                    print("Got an error for ", city_country)    
-            if len(coordinates_list) == 0:
-                coordinates_list.append("None")
-            return coordinates_list
-        
-        logger.info("Extracting location")
+                    print("Got an error for ", text)
+                    return None
         
         # check if the file exists
         if Path(self.output_folder_path + "location.csv").exists():
             logger.info("location.csv already exists. Skipping this step.")
             return
         
-        location_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("2")
-                .apply(lambda x: extract_location(x))
-                .alias("location")
-            ])
-            .explode("location")
-            .select(["DOI", "location"])
-            .filter(pl.col("location") != "None")
-            .with_row_count('id')
-            .with_column(pl.col("location").str.split(",")
-                .alias("split_str"))
-            .explode("split_str")
-            .with_column(
-                ("string_" + pl.arange(0, pl.count()).cast(pl.Utf8).str.zfill(2))
-                .over("id")
-                .alias("col_nm")
-                .str.replace(r"string_00", "longitude")
-                .str.replace(r"string_01", "latitude"))
-            .pivot(
-                index=['id', "DOI", 'location'],
-                values='split_str',
-                columns='col_nm')
-            .select(["DOI", "longitude", "latitude"])
-        )
+        location_df = self.input_df[["0", "3"]] 
+        location_df["label_dict"] = location_df.iloc[:,1].apply(lambda x: ast.literal_eval(x))
+        location_df = location_df.join(pd.json_normalize(location_df["label_dict"]))
+        # set the first column as index
+        location_df.set_index("0", inplace=True)
+        location_df = location_df["study_area"].explode().to_frame()
+        # create a string of "Country, City" for each paper
+        location_df["study_area"] = location_df["study_area"].apply(lambda x: ast.literal_eval(str(x)))
+        location_df["study_area"] = location_df["study_area"].apply(lambda x: x["Country"] + ", " + x["City"] if x.get("City") is not None else x["Country"])
+        location_df["study_area"] = location_df["study_area"].apply(lambda x: extract_location(str(x)))
         # save the output
-        location_df.write_csv(self.output_folder_path + "location.csv")
+        location_df.to_csv(self.output_folder_path + "location.csv")
         logger.info("location.csv saved")
     
-    def get_extent(self):
-        def extract_extent(text):
-            # Regular expression pattern to match the string after "Extent/scale of the study area:"
-            pattern = r"Extent/scale of the study area:\s*(.*-level)"
-
-            # Extract the matched string
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                extent_string = match.group(1)
-                return extent_string.lower().strip()
-            else:
-                return "None"
-        
-        logger.info("Extracting extent")
-        
+    def get_extent(self):        
         # check if the file exists
         if Path(self.output_folder_path + "extent.csv").exists():
             logger.info("extent.csv already exists. Skipping this step.")
             return
         
-        extent_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("2")
-                .apply(lambda x: extract_extent(x))
-                .alias("extent")
-            ])
-            .select(["DOI", "extent"]))
+        extent_df = self.input_df[["0", "3"]]
+        extent_df["label_dict"] = extent_df.iloc[:,1].apply(lambda x: ast.literal_eval(x))
+        extent_df = extent_df.join(pd.json_normalize(extent_df["label_dict"]))
+        extent = extent_df[['0', 'extent']]
         # save the output
-        extent_df.write_csv(self.output_folder_path + "extent.csv")  
+        extent_df.to_csv(self.output_folder_path + "extent.csv")  
         logger.info("extent.csv saved")
     
     def get_image_data_type(self):
-        def extract_image_data_type(text):
-            nlp = spacy.load("en_core_web_sm")
-            # final list of image data types
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about type, source and size
-                if len(type_source_size) == 1:
-                    continue
+        # Function to parse the string in each row
+        def parse_string(row):
+            try:
+                # Try to parse the row with ast.literal_eval
+                if row.startswith('{'):
+                    # If the row is a dictionary, parse it and return the value of "image_data"
+                    row_dict = ast.literal_eval(row)
+                    return row_dict['image_data']
                 else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        continue
-                    if "not" not in type_source_size[1].strip().lower():
-                        # image type
-                        image_data_type = type_source_size[0].strip()
-                    else:
-                        continue
-                # remove the digits and the period at the start of the string
-                pattern = "^\d+\.\s" # pattern to match one or more digits followed by a period and a space at the start of the string
-                replacement = ""
-                image_data_type = re.sub(pattern, replacement, image_data_type).lower() 
-                final_list.append(image_data_type)
-            return final_list
-        
-        def str_to_list(text):
-            return ast.literal_eval(text)
-        
+                    # If the row is a list, parse it directly
+                    row_list = [ast.literal_eval(line.lstrip('- ')) for line in row.split('\n')]
+                    return row_list
+            except SyntaxError:
+                try:
+                    # Extract all complete inner lists
+                    list_strings = re.findall(r'\[.*?\]', row)
+                    # Use ast.literal_eval to convert the string representations into actual lists
+                    # We use a try-except block to handle cases where the string representation cannot be converted into a list
+                    list_objects = []
+                    for ls in list_strings:
+                        try:
+                            list_objects.append(ast.literal_eval(ls))
+                        except SyntaxError:
+                            pass  # Ignore strings that cannot be converted into lists
+                    # Remove duplicates by converting the list of lists into a list of tuples and then into a set
+                    unique_list_objects = list(set(tuple(lo) for lo in list_objects))
+                    # Convert the tuples back into lists
+                    unique_list_objects = [list(ulo) for ulo in unique_list_objects]
+                    return unique_list_objects
+
+                except:
+                    # If a SyntaxError occurs, add quotes around items in the list and try again
+                    quoted_row = re.sub(r'\[([^]]*)\]', lambda m: str(m.group(1).split(', ')), row)
+                    row_list = [ast.literal_eval(line.lstrip('- ')) for line in quoted_row.split('\n')]
+                    return row_list
+            except ValueError:
+                return None
+
         logger.info("Extracting image_data_type")
         
         # check if the file exists
@@ -251,158 +204,93 @@ class InfoExtracter:
             logger.info("image_data_type.csv already exists. Skipping this step.")
             return
         
-        image_data_type_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("3")
-                .apply(lambda x: extract_image_data_type(x))
-                .alias("image_data_type")
-            ])
-            .explode("image_data_type")
-            .select(["DOI", "image_data_type"]))
+        image_data_type_df = self.input_df[["0", "4"]]
+        image_data_type_df["label_dict"] = image_data_type_df.iloc[:,1].apply(lambda x: parse_string(x))
+        # Explode the outer list vertically
+        image_data_type_df = image_data_type_df.explode('label_dict')
+
+        # Split the inner list into separate columns
+        # Find rows where 'label_dict' is a float or None
+        invalid_rows = image_data_type_df['label_dict'].apply(lambda x: isinstance(x, float) or x is None)
+
+        # Handle these rows. Here, I'm just dropping these rows, but you might want to handle them differently.
+        image_data_type_df = image_data_type_df[~invalid_rows]
+
+        # Then you can convert the 'label_dict' column to a list and create your new DataFrame:
+        image_data_type_df = pd.DataFrame(image_data_type_df['label_dict'].to_list(), index=image_data_type_df["0"])
+        # only keep the first and 3 columns
+        image_data_type_df = image_data_type_df.iloc[:,0:3]
+
         # save the output
-        image_data_type_df.write_csv(self.output_folder_path + "image_data_type.csv")  
+        image_data_type_df.to_csv(self.output_folder_path + "image_data_type.csv")  
         logger.info("image_data_type.csv saved") 
     
-    # # def get_image_data_source(self):
-    # #     def extract_image_data_source(text):
-    # #         # final list of image data types
-    # #         final_list = []
-    # #         text_list = text.split("\n")
-    # #         for text_line in text_list:
-    # #             type_source_size = text_line.split(":")
-    # #             # if the length of the list is 1, then there's likely no information about type, source and size
-    # #             if len(type_source_size) == 1:
-    # #                 continue
-    # #             elif len(type_source_size) == 2:
-    # #                 # check if the second element contains "not"
-    # #                 if "not" not in type_source_size[1].strip().lower():
-    # #                     image_data_source = type_source_size[1].strip()
-    # #                 else:
-    # #                     continue
-    # #             else:
-    # #                 # check if there're more than one "not" in the text_line
-    # #                 if text.lower().count("not") > 1:
-    # #                     continue
-    # #                 else:
-    # #                     image_data_source = type_source_size[1].strip()
-    # #             final_list.append(image_data_source)
-    # #         return final_list
-        
-    # #     logger.info("Extracting image_data_source")
-        
-    # #     # check if the file exists
-    # #     if Path(self.output_folder_path + "image_data_source.csv").exists():
-    # #         logger.info("image_data_source.csv already exists. Skipping this step.")
-    # #         return
-        
-    # #     image_data_source_df = (self.input_df.with_columns([
-    # #         pl.col("0").alias("DOI"),
-    # #         pl.col("3")
-    # #             .apply(lambda x: extract_image_data_source(x))
-    # #             .alias("image_data_source")
-    # #         ])
-    # #         .explode("image_data_source")
-    # #         .select(["DOI", "image_data_source"]))
-    # #     # save the output
-    # #     image_data_source_df.write_csv(self.output_folder_path + "image_data_source.csv")  
-    # #     logger.info("image_data_source.csv saved")  
-    # #     pass
-    
-    # # def get_image_data_size(self):
-    #     def extract_image_data_size(text):
-    #         # final list of image data types
-    #         final_list = []
-    #         text_list = text.split("\n")
-    #         for text_line in text_list:
-    #             type_size_size = text_line.split(":")
-    #             # if the length of the list is 1, then there's likely no information about type, size and size
-    #             if len(type_size_size) == 1:
-    #                 continue
-    #             elif len(type_size_size) == 2:
-    #                 # check if the second element contains "not"
-    #                 if "not" not in type_size_size[1].strip().lower():
-    #                     # get entity names from the text
-    #                     image_data_size = type_size_size[1].strip()
-    #                 else:
-    #                     continue
-    #             else:
-    #                 # check if there're more than one "not" in the text_line
-    #                 if text.lower().count("not") > 1:
-    #                     continue
-    #                 else:
-    #                     image_data_size = type_size_size[0].strip()
-    #             final_list.append(image_data_size)
-    #         return final_list
-        
-    #     logger.info("Extracting image_data_size")
-        
-    #     # check if the file exists
-    #     if Path(self.output_folder_path + "image_data_size.csv").exists():
-    #         logger.info("image_data_size.csv already exists. Skipping this step.")
-    #         return
-        
-    #     image_data_size_df = (self.input_df.with_columns([
-    #         pl.col("0").alias("DOI"),
-    #         pl.col("3")
-    #             .apply(lambda x: extract_image_data_size(x))
-    #             .alias("image_data_size")
-    #         ])
-    #         .explode("image_data_size")
-    #         .select(["DOI", "image_data_size"]))
-    #     # save the output
-    #     image_data_size_df.write_csv(self.output_folder_path + "image_data_size.csv")  
-    #     logger.info("image_data_size.csv saved")  
-    #     pass
-    
     def get_subjective_data_type(self):
-        def extract_subjective_data_type(text):
-            # final list of subjective data types
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about type, source and size
-                if len(type_source_size) == 1:
-                    continue
+        # Function to parse the string in each row
+        def parse_string(row):
+            try:
+                # Try to parse the row with ast.literal_eval
+                if row.startswith('{'):
+                    # If the row is a dictionary, parse it and return the value of "perception_data"
+                    row_dict = ast.literal_eval(row)
+                    return row_dict['perception_data']
                 else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        continue
-                    if "not" not in type_source_size[1].strip().lower():
-                        # subjective type
-                        subjective_data_type = type_source_size[0].strip()
-                        # this is a quick fix for the case where the subjective data type is "subjective perception data"
-                        if subjective_data_type.lower() == "subjective perception data":
-                            subjective_data_type = type_source_size[1].strip() 
-                    else:
-                        continue
-                # remove the digits and the period at the start of the string
-                pattern = "^\d+\.\s" # pattern to match one or more digits followed by a period and a space at the start of the string
-                replacement = ""
-                subjective_data_type = re.sub(pattern, replacement, subjective_data_type).lower() 
-                final_list.append(subjective_data_type)
-            return final_list
-        
-        logger.info("Extracting subjective_data_type")
+                    # If the row is a list, parse it directly
+                    row_list = [ast.literal_eval(line.lstrip('- ')) for line in row.split('\n')]
+                    return row_list
+            except SyntaxError:
+                try:
+                    # Extract all complete inner lists
+                    list_strings = re.findall(r'\[.*?\]', row)
+                    # Use ast.literal_eval to convert the string representations into actual lists
+                    # We use a try-except block to handle cases where the string representation cannot be converted into a list
+                    list_objects = []
+                    for ls in list_strings:
+                        try:
+                            list_objects.append(ast.literal_eval(ls))
+                        except SyntaxError:
+                            pass  # Ignore strings that cannot be converted into lists
+                    # Remove duplicates by converting the list of lists into a list of tuples and then into a set
+                    unique_list_objects = list(set(tuple(lo) for lo in list_objects))
+                    # Convert the tuples back into lists
+                    unique_list_objects = [list(ulo) for ulo in unique_list_objects]
+                    return unique_list_objects
+
+                except:
+                    # If a SyntaxError occurs, add quotes around items in the list and try again
+                    quoted_row = re.sub(r'\[([^]]*)\]', lambda m: str(m.group(1).split(', ')), row)
+                    row_list = [ast.literal_eval(line.lstrip('- ')) for line in quoted_row.split('\n')]
+                    return row_list
+            except ValueError:
+                return None
+
+        logger.info("Extracting perception_data_type")
         
         # check if the file exists
-        if Path(self.output_folder_path + "subjective_data_type.csv").exists():
-            logger.info("subjective_data_type.csv already exists. Skipping this step.")
+        if Path(self.output_folder_path + "perception_data_type.csv").exists():
+            logger.info("perception_data_type.csv already exists. Skipping this step.")
             return
         
-        subjective_data_type_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("4")
-                .apply(lambda x: extract_subjective_data_type(x))
-                .alias("subjective_data_type")
-            ])
-            .explode("subjective_data_type")
-            .select(["DOI", "subjective_data_type"]))
+        perception_data_type_df = self.input_df[["0", "5"]]
+        perception_data_type_df["label_dict"] = perception_data_type_df.iloc[:,1].apply(lambda x: parse_string(x))
+        # Explode the outer list vertically
+        perception_data_type_df = perception_data_type_df.explode('label_dict')
+
+        # Split the inner list into separate columns
+        # Find rows where 'label_dict' is a float or None
+        invalid_rows = perception_data_type_df['label_dict'].apply(lambda x: isinstance(x, float) or x is None)
+
+        # Handle these rows. Here, I'm just dropping these rows, but you might want to handle them differently.
+        perception_data_type_df = perception_data_type_df[~invalid_rows]
+
+        # Then you can convert the 'label_dict' column to a list and create your new DataFrame:
+        perception_data_type_df = pd.DataFrame(perception_data_type_df['label_dict'].to_list(), index=perception_data_type_df["0"])
+        # only keep the first and 3 columns
+        perception_data_type_df = perception_data_type_df.iloc[:,0:3]
+
         # save the output
-        subjective_data_type_df.write_csv(self.output_folder_path + "subjective_data_type.csv")  
-        logger.info("subjective_data_type.csv saved") 
-        pass
+        perception_data_type_df.to_csv(self.output_folder_path + "perception_data_type.csv")  
+        logger.info("perception_data_type.csv saved") 
     
     def get_subjective_data_source(self):
         def extract_subjective_data_source(text):
