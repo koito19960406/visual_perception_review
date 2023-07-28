@@ -210,12 +210,6 @@ class InfoExtracter:
         image_data_type_df = image_data_type_df.explode('label_dict')
 
         # Split the inner list into separate columns
-<<<<<<< HEAD
-        image_data_type_df = pd.DataFrame(image_data_type_df['label_dict'].to_list(), index=image_data_type_df["0"])
-
-        # Drop the original 'image_data' column
-        image_data_type_df = image_data_type_df.drop(columns=['image_data'])
-=======
         # Find rows where 'label_dict' is a float or None
         invalid_rows = image_data_type_df['label_dict'].apply(lambda x: isinstance(x, float) or x is None)
 
@@ -227,7 +221,6 @@ class InfoExtracter:
         # only keep the first and 3 columns
         image_data_type_df = image_data_type_df.iloc[:,0:3]
 
->>>>>>> 62721714c943790cf948d68f590ea3f89d15d578
         # save the output
         image_data_type_df.to_csv(self.output_folder_path + "image_data_type.csv")  
         logger.info("image_data_type.csv saved") 
@@ -299,99 +292,6 @@ class InfoExtracter:
         perception_data_type_df.to_csv(self.output_folder_path + "perception_data_type.csv")  
         logger.info("perception_data_type.csv saved") 
     
-    def get_subjective_data_source(self):
-        def extract_subjective_data_source(text):
-            # final list of subjective data sources
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about source, source and size
-                if len(type_source_size) == 1:
-                    continue
-                else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        continue
-                    if "not" not in type_source_size[1].strip().lower():
-                        # subjective source
-                        subjective_data_source = type_source_size[1].strip()
-                    else:
-                        continue
-                final_list.append(subjective_data_source)
-            return final_list
-        
-        logger.info("Extracting subjective_data_source")
-        
-        # check if the file exists
-        if Path(self.output_folder_path + "subjective_data_source.csv").exists():
-            logger.info("subjective_data_source.csv already exists. Skipping this step.")
-            return
-        
-        subjective_data_source_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("4")
-                .apply(lambda x: extract_subjective_data_source(x))
-                .alias("subjective_data_source")
-            ])
-            .explode("subjective_data_source")
-            .select(["DOI", "subjective_data_source"]))
-        # save the output
-        subjective_data_source_df.write_csv(self.output_folder_path + "subjective_data_source.csv")  
-        logger.info("subjective_data_source.csv saved") 
-        pass
-
-    def get_subjective_data_size(self):
-        def extract_subjective_data_size(text):
-            # final list of subjective data sizes
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about size, size and size
-                if len(type_source_size) == 1:
-                    continue
-                else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        subjective_data_size = "None"
-                    if "not" not in type_source_size[1].strip().lower():
-                        # subjective size
-                        pattern = r'(\d{1,3}(,\d{3})*|\d+)\s*(?:\D*\s*)?(participant|respondent)(s)?'
-                        matches = re.findall(pattern, type_source_size[len(type_source_size)-1])
-                        match_list = [match[0].replace(',', '') for match in matches]
-                        if len(match_list) > 0:
-                            subjective_data_size = match_list[0]
-                        else:
-                            subjective_data_size = "None"
-                    else:
-                        subjective_data_size = "None"
-                final_list.append(subjective_data_size)
-            return final_list
-        
-        logger.info("Extracting subjective_data_size")
-        
-        # check if the file exists
-        if Path(self.output_folder_path + "subjective_data_size.csv").exists():
-            logger.info("subjective_data_size.csv already exists. Skipping this step.")
-            return
-        
-        subjective_data_size_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("4")
-                .apply(lambda x: extract_subjective_data_size(x))
-                .alias("subjective_data_size")
-            ])
-            .explode("subjective_data_size")
-            .select(["DOI", "subjective_data_size"])
-            .filter(pl.col("subjective_data_size") != "None"))
-        # save the output
-        subjective_data_size_df.write_csv(self.output_folder_path + "subjective_data_size.csv")  
-        logger.info("subjective_data_size.csv saved") 
-        pass
-    
     def get_other_sensory_data(self):
         def categorize_text(text):
             sound = "sound|acoustic|auditory|audio|noise|volume|loud|pitch|frequency|pitch|tone"
@@ -425,23 +325,37 @@ class InfoExtracter:
                 final_list.append(category)
             return final_list
         
-        logger.info("Extracting other_sensory_data")
+        # function to check if
+        # 1. the value is dict. if not return None
+        # 2. if so, loop through the keys and check the value. If "not applicable", return None
+        # 3. if not, pass the value to categorize_text and return the result
+        def check_dict_value(dict_value):
+            result_list = []
+            if isinstance(dict_value, dict):
+                for key, value in dict_value.items():
+                    if value.lower() == "not applicable":
+                        return None
+                    else:
+                        result_list.append(categorize_text(key))
+            else:
+                return None
+            return result_list
         
         # check if the file exists
         if Path(self.output_folder_path + "other_sensory_data.csv").exists():
             logger.info("other_sensory_data.csv already exists. Skipping this step.")
             return
         
-        other_sensory_data_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("5")
-                .apply(lambda x: extract_other_sensory_data(x))
-                .alias("other_sensory_data")
-            ])
-            .explode("other_sensory_data")
-            .select(["DOI", "other_sensory_data"]))
+        other_sensory_data_df = self.input_df[["0", "6"]]
+        other_sensory_data_df["label_dict"] = other_sensory_data_df.iloc[:,1].apply(lambda x: ast.literal_eval(str(x)))
+        other_sensory_data_df = other_sensory_data_df.join(pd.json_normalize(other_sensory_data_df["label_dict"], max_level=0))
+        other_sensory_data_df["label_dict"] = other_sensory_data_df["label_dict"].apply(lambda x: check_dict_value(x["other_data_sources"]))
+        # explode the list
+        # drop "other_data_sources" column
+        other_sensory_data_df.set_index("0", inplace=True)
+        other_sensory_data_df = other_sensory_data_df["label_dict"].explode()
         # save the output
-        other_sensory_data_df.write_csv(self.output_folder_path + "other_sensory_data.csv")  
+        other_sensory_data_df.to_csv(self.output_folder_path + "other_sensory_data.csv")  
         logger.info("other_sensory_data.csv saved") 
         pass
     
