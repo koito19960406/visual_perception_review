@@ -55,11 +55,11 @@ def main(initial_input_csv: str, input_filepath: str, temp_output_path: str, fin
                                 os.path.join(temp_output_path,"qa_result_2023-07-19.csv"), 
                                 final_output_path)
     info_extracter.check_unaswered_papers()
-    # info_extracter.get_summary()
-    # info_extracter.get_aspect()
-    # info_extracter.get_location()
-    # info_extracter.get_extent()
-    # info_extracter.get_image_data_type()
+    info_extracter.get_summary()
+    info_extracter.get_aspect()
+    info_extracter.get_location()
+    info_extracter.get_extent()
+    info_extracter.get_image_data_type()
     # info_extracter.get_subjective_data_type()
     # info_extracter.get_subjective_data_source()
     # info_extracter.get_subjective_data_size()
@@ -100,7 +100,7 @@ if __name__ == '__main__':
     ]
     output_parsers = [PydanticOutputParser(pydantic_object = cls) for cls in classes]
     temp_output_path = "data/interim/"
-    final_output_path = "data/processed/"
+    final_output_path = "data/processed/2nd_run/"
     # get api keys for openai and huggingface
     load_dotenv(find_dotenv())
     openai_api_key = os.getenv('OPENAI_API_KEY')
