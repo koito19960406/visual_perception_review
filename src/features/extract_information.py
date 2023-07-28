@@ -291,7 +291,6 @@ class InfoExtracter:
         # save the output
         perception_data_type_df.to_csv(self.output_folder_path + "perception_data_type.csv")  
         logger.info("perception_data_type.csv saved") 
-
     
     def get_other_sensory_data(self):
         def categorize_text(text):
@@ -326,23 +325,37 @@ class InfoExtracter:
                 final_list.append(category)
             return final_list
         
-        logger.info("Extracting other_sensory_data")
+        # function to check if
+        # 1. the value is dict. if not return None
+        # 2. if so, loop through the keys and check the value. If "not applicable", return None
+        # 3. if not, pass the value to categorize_text and return the result
+        def check_dict_value(dict_value):
+            result_list = []
+            if isinstance(dict_value, dict):
+                for key, value in dict_value.items():
+                    if value.lower() == "not applicable":
+                        return None
+                    else:
+                        result_list.append(categorize_text(key))
+            else:
+                return None
+            return result_list
         
         # check if the file exists
         if Path(self.output_folder_path + "other_sensory_data.csv").exists():
             logger.info("other_sensory_data.csv already exists. Skipping this step.")
             return
         
-        other_sensory_data_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("5")
-                .apply(lambda x: extract_other_sensory_data(x))
-                .alias("other_sensory_data")
-            ])
-            .explode("other_sensory_data")
-            .select(["DOI", "other_sensory_data"]))
+        other_sensory_data_df = self.input_df[["0", "6"]]
+        other_sensory_data_df["label_dict"] = other_sensory_data_df.iloc[:,1].apply(lambda x: ast.literal_eval(str(x)))
+        other_sensory_data_df = other_sensory_data_df.join(pd.json_normalize(other_sensory_data_df["label_dict"], max_level=0))
+        other_sensory_data_df["label_dict"] = other_sensory_data_df["label_dict"].apply(lambda x: check_dict_value(x["other_data_sources"]))
+        # explode the list
+        # drop "other_data_sources" column
+        other_sensory_data_df.set_index("0", inplace=True)
+        other_sensory_data_df = other_sensory_data_df["label_dict"].explode()
         # save the output
-        other_sensory_data_df.write_csv(self.output_folder_path + "other_sensory_data.csv")  
+        other_sensory_data_df.to_csv(self.output_folder_path + "other_sensory_data.csv")  
         logger.info("other_sensory_data.csv saved") 
         pass
     
