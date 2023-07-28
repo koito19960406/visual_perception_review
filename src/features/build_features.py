@@ -60,7 +60,7 @@ def main(initial_input_csv: str, input_filepath: str, temp_output_path: str, fin
     info_extracter.get_location()
     info_extracter.get_extent()
     info_extracter.get_image_data_type()
-    # info_extracter.get_subjective_data_type()
+    info_extracter.get_subjective_data_type()
     # info_extracter.get_subjective_data_source()
     # info_extracter.get_subjective_data_size()
     # info_extracter.get_other_sensory_data()

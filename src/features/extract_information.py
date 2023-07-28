@@ -210,154 +210,94 @@ class InfoExtracter:
         image_data_type_df = image_data_type_df.explode('label_dict')
 
         # Split the inner list into separate columns
+<<<<<<< HEAD
         image_data_type_df = pd.DataFrame(image_data_type_df['label_dict'].to_list(), index=image_data_type_df["0"])
 
         # Drop the original 'image_data' column
         image_data_type_df = image_data_type_df.drop(columns=['image_data'])
+=======
+        # Find rows where 'label_dict' is a float or None
+        invalid_rows = image_data_type_df['label_dict'].apply(lambda x: isinstance(x, float) or x is None)
+
+        # Handle these rows. Here, I'm just dropping these rows, but you might want to handle them differently.
+        image_data_type_df = image_data_type_df[~invalid_rows]
+
+        # Then you can convert the 'label_dict' column to a list and create your new DataFrame:
+        image_data_type_df = pd.DataFrame(image_data_type_df['label_dict'].to_list(), index=image_data_type_df["0"])
+        # only keep the first and 3 columns
+        image_data_type_df = image_data_type_df.iloc[:,0:3]
+
+>>>>>>> 62721714c943790cf948d68f590ea3f89d15d578
         # save the output
         image_data_type_df.to_csv(self.output_folder_path + "image_data_type.csv")  
         logger.info("image_data_type.csv saved") 
     
-    # # def get_image_data_source(self):
-    # #     def extract_image_data_source(text):
-    # #         # final list of image data types
-    # #         final_list = []
-    # #         text_list = text.split("\n")
-    # #         for text_line in text_list:
-    # #             type_source_size = text_line.split(":")
-    # #             # if the length of the list is 1, then there's likely no information about type, source and size
-    # #             if len(type_source_size) == 1:
-    # #                 continue
-    # #             elif len(type_source_size) == 2:
-    # #                 # check if the second element contains "not"
-    # #                 if "not" not in type_source_size[1].strip().lower():
-    # #                     image_data_source = type_source_size[1].strip()
-    # #                 else:
-    # #                     continue
-    # #             else:
-    # #                 # check if there're more than one "not" in the text_line
-    # #                 if text.lower().count("not") > 1:
-    # #                     continue
-    # #                 else:
-    # #                     image_data_source = type_source_size[1].strip()
-    # #             final_list.append(image_data_source)
-    # #         return final_list
-        
-    # #     logger.info("Extracting image_data_source")
-        
-    # #     # check if the file exists
-    # #     if Path(self.output_folder_path + "image_data_source.csv").exists():
-    # #         logger.info("image_data_source.csv already exists. Skipping this step.")
-    # #         return
-        
-    # #     image_data_source_df = (self.input_df.with_columns([
-    # #         pl.col("0").alias("DOI"),
-    # #         pl.col("3")
-    # #             .apply(lambda x: extract_image_data_source(x))
-    # #             .alias("image_data_source")
-    # #         ])
-    # #         .explode("image_data_source")
-    # #         .select(["DOI", "image_data_source"]))
-    # #     # save the output
-    # #     image_data_source_df.write_csv(self.output_folder_path + "image_data_source.csv")  
-    # #     logger.info("image_data_source.csv saved")  
-    # #     pass
-    
-    # # def get_image_data_size(self):
-    #     def extract_image_data_size(text):
-    #         # final list of image data types
-    #         final_list = []
-    #         text_list = text.split("\n")
-    #         for text_line in text_list:
-    #             type_size_size = text_line.split(":")
-    #             # if the length of the list is 1, then there's likely no information about type, size and size
-    #             if len(type_size_size) == 1:
-    #                 continue
-    #             elif len(type_size_size) == 2:
-    #                 # check if the second element contains "not"
-    #                 if "not" not in type_size_size[1].strip().lower():
-    #                     # get entity names from the text
-    #                     image_data_size = type_size_size[1].strip()
-    #                 else:
-    #                     continue
-    #             else:
-    #                 # check if there're more than one "not" in the text_line
-    #                 if text.lower().count("not") > 1:
-    #                     continue
-    #                 else:
-    #                     image_data_size = type_size_size[0].strip()
-    #             final_list.append(image_data_size)
-    #         return final_list
-        
-    #     logger.info("Extracting image_data_size")
-        
-    #     # check if the file exists
-    #     if Path(self.output_folder_path + "image_data_size.csv").exists():
-    #         logger.info("image_data_size.csv already exists. Skipping this step.")
-    #         return
-        
-    #     image_data_size_df = (self.input_df.with_columns([
-    #         pl.col("0").alias("DOI"),
-    #         pl.col("3")
-    #             .apply(lambda x: extract_image_data_size(x))
-    #             .alias("image_data_size")
-    #         ])
-    #         .explode("image_data_size")
-    #         .select(["DOI", "image_data_size"]))
-    #     # save the output
-    #     image_data_size_df.write_csv(self.output_folder_path + "image_data_size.csv")  
-    #     logger.info("image_data_size.csv saved")  
-    #     pass
-    
     def get_subjective_data_type(self):
-        def extract_subjective_data_type(text):
-            # final list of subjective data types
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about type, source and size
-                if len(type_source_size) == 1:
-                    continue
+        # Function to parse the string in each row
+        def parse_string(row):
+            try:
+                # Try to parse the row with ast.literal_eval
+                if row.startswith('{'):
+                    # If the row is a dictionary, parse it and return the value of "perception_data"
+                    row_dict = ast.literal_eval(row)
+                    return row_dict['perception_data']
                 else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        continue
-                    if "not" not in type_source_size[1].strip().lower():
-                        # subjective type
-                        subjective_data_type = type_source_size[0].strip()
-                        # this is a quick fix for the case where the subjective data type is "subjective perception data"
-                        if subjective_data_type.lower() == "subjective perception data":
-                            subjective_data_type = type_source_size[1].strip() 
-                    else:
-                        continue
-                # remove the digits and the period at the start of the string
-                pattern = "^\d+\.\s" # pattern to match one or more digits followed by a period and a space at the start of the string
-                replacement = ""
-                subjective_data_type = re.sub(pattern, replacement, subjective_data_type).lower() 
-                final_list.append(subjective_data_type)
-            return final_list
-        
-        logger.info("Extracting subjective_data_type")
+                    # If the row is a list, parse it directly
+                    row_list = [ast.literal_eval(line.lstrip('- ')) for line in row.split('\n')]
+                    return row_list
+            except SyntaxError:
+                try:
+                    # Extract all complete inner lists
+                    list_strings = re.findall(r'\[.*?\]', row)
+                    # Use ast.literal_eval to convert the string representations into actual lists
+                    # We use a try-except block to handle cases where the string representation cannot be converted into a list
+                    list_objects = []
+                    for ls in list_strings:
+                        try:
+                            list_objects.append(ast.literal_eval(ls))
+                        except SyntaxError:
+                            pass  # Ignore strings that cannot be converted into lists
+                    # Remove duplicates by converting the list of lists into a list of tuples and then into a set
+                    unique_list_objects = list(set(tuple(lo) for lo in list_objects))
+                    # Convert the tuples back into lists
+                    unique_list_objects = [list(ulo) for ulo in unique_list_objects]
+                    return unique_list_objects
+
+                except:
+                    # If a SyntaxError occurs, add quotes around items in the list and try again
+                    quoted_row = re.sub(r'\[([^]]*)\]', lambda m: str(m.group(1).split(', ')), row)
+                    row_list = [ast.literal_eval(line.lstrip('- ')) for line in quoted_row.split('\n')]
+                    return row_list
+            except ValueError:
+                return None
+
+        logger.info("Extracting perception_data_type")
         
         # check if the file exists
-        if Path(self.output_folder_path + "subjective_data_type.csv").exists():
-            logger.info("subjective_data_type.csv already exists. Skipping this step.")
+        if Path(self.output_folder_path + "perception_data_type.csv").exists():
+            logger.info("perception_data_type.csv already exists. Skipping this step.")
             return
         
-        subjective_data_type_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("4")
-                .apply(lambda x: extract_subjective_data_type(x))
-                .alias("subjective_data_type")
-            ])
-            .explode("subjective_data_type")
-            .select(["DOI", "subjective_data_type"]))
+        perception_data_type_df = self.input_df[["0", "5"]]
+        perception_data_type_df["label_dict"] = perception_data_type_df.iloc[:,1].apply(lambda x: parse_string(x))
+        # Explode the outer list vertically
+        perception_data_type_df = perception_data_type_df.explode('label_dict')
+
+        # Split the inner list into separate columns
+        # Find rows where 'label_dict' is a float or None
+        invalid_rows = perception_data_type_df['label_dict'].apply(lambda x: isinstance(x, float) or x is None)
+
+        # Handle these rows. Here, I'm just dropping these rows, but you might want to handle them differently.
+        perception_data_type_df = perception_data_type_df[~invalid_rows]
+
+        # Then you can convert the 'label_dict' column to a list and create your new DataFrame:
+        perception_data_type_df = pd.DataFrame(perception_data_type_df['label_dict'].to_list(), index=perception_data_type_df["0"])
+        # only keep the first and 3 columns
+        perception_data_type_df = perception_data_type_df.iloc[:,0:3]
+
         # save the output
-        subjective_data_type_df.write_csv(self.output_folder_path + "subjective_data_type.csv")  
-        logger.info("subjective_data_type.csv saved") 
-        pass
+        perception_data_type_df.to_csv(self.output_folder_path + "perception_data_type.csv")  
+        logger.info("perception_data_type.csv saved") 
     
     def get_subjective_data_source(self):
         def extract_subjective_data_source(text):
