@@ -79,6 +79,9 @@ target/
 # exclude data from source control by default
 /data/
 
+# But don't ignore the subfolder
+!/data/processed/
+
 # exclude log folder
 /logs/
 

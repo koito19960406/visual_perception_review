@@ -62,15 +62,13 @@ def main(initial_input_csv: str, input_filepath: str, temp_output_path: str, fin
     info_extracter.get_image_data_type()
     info_extracter.get_subjective_data_type()
     info_extracter.get_other_sensory_data()
-    # info_extracter.get_type_of_research()
-    # info_extracter.get_type_of_research_detail()
-    # info_extracter.get_cv_model_name()
-    # info_extracter.get_cv_model_purpose()
-    # info_extracter.get_cv_model_training()
-    # info_extracter.get_code_availability()
-    # info_extracter.get_data_availability()
-    # info_extracter.get_irb()
-    # info_extracter.get_limitation_future_opportunity()
+    info_extracter.get_type_of_research()
+    info_extracter.get_type_of_research_detail()
+    info_extracter.get_cv_model()
+    info_extracter.get_code_availability()
+    info_extracter.get_data_availability()
+    info_extracter.get_irb()
+    info_extracter.get_limitation_future_opportunity()
     
 if __name__ == '__main__':
     # not used in this stub but often useful for finding various files

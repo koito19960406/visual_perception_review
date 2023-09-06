@@ -44,8 +44,9 @@ class InfoExtracter:
 
     def check_unaswered_papers(self):
         # check if the file exists
-        if Path(self.output_folder_path + "unanswered_papers.csv").exists():
-            logger.info("unanswered_papers.csv already exists. Skipping this step.")
+        if (Path(self.output_folder_path + "unanswered_papers.csv").exists()) and\
+            (Path(self.output_folder_path + "input_df_with_title_doi.xlsx").exists()):
+            logger.info("unanswered_papers.csv and input_df_with_title_doi.xlsx already exist. Skipping this step.")
             return
         input_df = self.input_df.copy()
         initial_input_df = self.initial_input_df.copy()
@@ -61,6 +62,13 @@ class InfoExtracter:
         # save as csv
         remaining_df.to_csv(self.output_folder_path + "unanswered_papers.csv")
         logger.info("unanswered_papers.csv saved")
+        # save input_df as excel
+        input_df["EID"] = ""
+        # for those rows with ".txt" in column "0", replace ".txt" with "/" and save to column "EID"
+        input_df.loc[input_df["0"].str.contains(".txt"), "doi"] = input_df.loc[input_df["0"].str.contains(".txt"), "0"].str.replace(".txt", "").str.replace("_", "/")
+        input_df = input_df[["0", "title", "doi", "EID"]]
+        input_df.to_excel(self.output_folder_path + "input_df_with_title_doi.xlsx")
+        logger.info("input_df_with_title_doi.xlsx saved")
         
     def get_summary(self):
         # check if the file exists
@@ -90,9 +98,6 @@ class InfoExtracter:
         # save the output
         aspect_df.to_csv(self.output_folder_path + "aspect.csv")
         logger.info("aspect.csv saved")  
-        # save the output
-        aspect_df.to_csv(self.output_folder_path + "aspect.csv")
-        logger.info("aspect.csv saved") 
     
     def get_location(self):
         # define a function to extract location
@@ -310,20 +315,6 @@ class InfoExtracter:
                 return "tactile"
             else:
                 return "None"
-
-        def extract_other_sensory_data(text):
-            # final list of other sensory data
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                # if the length of the list is 1, then there's likely no information about size, size and size
-                if "not" in text_line.lower():
-                    continue
-                else:
-                    # categorize the text
-                    category = categorize_text(text_line)
-                final_list.append(category)
-            return final_list
         
         # function to check if
         # 1. the value is dict. if not return None
@@ -360,69 +351,41 @@ class InfoExtracter:
         pass
     
     def get_type_of_research(self):
-        def extract_type_of_research(text):
-            pattern = r"Type of research:\s*(Quantitative|Qualitative)"
-            match = re.search(pattern, text)
-            if match is None:
-                return "None"
-            else:
-                return match.group(1)
-        
-        logger.info("Extracting type_of_research")
+        # define a function to convert literal string to dict by fixing the format
+        def convert_to_dict(text):
+            # Define replacements for the problematic parts of the strings
+            replacements = {
+                '"Place Pulse 2.0"': 'Place Pulse 2_0',
+                'SYNTHIA': 'SYNTHIA_dataset'
+            }
+            # Loop through the replacements and replace them in the string
+            for key, value in replacements.items():
+                text = text.replace(key, value)
+            # check if the text starts and ends with curly brackets
+            if not text.startswith("{"):
+                text = "{" + text
+            if not text.endswith("}"):
+                text = text + "}"
+            # convert to dict
+            return ast.literal_eval(text)
         
         # check if the file exists
         if Path(self.output_folder_path + "type_of_research.csv").exists():
             logger.info("type_of_research.csv already exists. Skipping this step.")
             return
         
-        type_of_research_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("6")
-                .apply(lambda x: extract_type_of_research(x))
-                .alias("type_of_research")
-            ])
-            .select(["DOI", "type_of_research"])
-            .filter(pl.col("type_of_research") != "None"))
+        type_of_research_df = self.input_df[["0", "7"]]
+        type_of_research_df['label_dict'] = type_of_research_df.iloc[:,1]
+        type_of_research_df["label_dict"] = type_of_research_df['label_dict'].apply(lambda x: convert_to_dict(x))
+        type_of_research_df = type_of_research_df.join(pd.json_normalize(type_of_research_df["label_dict"]))
+        type_of_research_df["method"] = type_of_research_df["method"].apply(lambda x: ' '.join(x))
+        type_of_research_df = type_of_research_df[["0", "research_type", "method"]]
         # save the output
-        type_of_research_df.write_csv(self.output_folder_path + "type_of_research.csv")  
+        type_of_research_df.to_csv(self.output_folder_path + "type_of_research.csv")  
         logger.info("type_of_research.csv saved") 
         pass
     
     def get_type_of_research_detail(self):
-        def categorize_text(text):
-            regression = re.compile("regression", re.IGNORECASE)
-            model_development = re.compile("model development", re.IGNORECASE)
-            index_construction = re.compile("index construction", re.IGNORECASE)
-            exploratory_analysis = re.compile("exploratory analysis", re.IGNORECASE)
-            others = re.compile("others", re.IGNORECASE)
-
-            if regression.search(text):
-                return "regression"
-            elif model_development.search(text):
-                return "model development"
-            elif index_construction.search(text):
-                return "index construction"
-            elif exploratory_analysis.search(text):
-                return "exploratory analysis"
-            elif others.search(text):
-                return "others"
-            else:
-                return "None"
-
-        def extract_type_of_research_detail(text):
-            # final list of other sensory data
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                # if the length of the list is 1, then there's likely no information about size, size and size
-                if "not" in text_line.lower():
-                    continue
-                else:
-                    # categorize the text
-                    category = categorize_text(text_line)
-                final_list.append(category)
-            return final_list
-        
         logger.info("Extracting type_of_research_detail")
         
         # check if the file exists
@@ -430,157 +393,77 @@ class InfoExtracter:
             logger.info("type_of_research_detail.csv already exists. Skipping this step.")
             return
         
-        type_of_research_detail_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("7")
-                .apply(lambda x: extract_type_of_research_detail(x))
-                .alias("type_of_research_detail")
-            ])
-            .explode("type_of_research_detail")
-            .select(["DOI", "type_of_research_detail"])
-            .filter(pl.col("type_of_research_detail") != "None"))
+        type_of_research_detail_df = self.input_df[["0", "8"]]
+        type_of_research_detail_df["label_dict"] = type_of_research_detail_df.iloc[:,1].apply(lambda x: ast.literal_eval(x))
+        type_of_research_detail_df = type_of_research_detail_df.join(pd.json_normalize(type_of_research_detail_df["label_dict"]))
+        type_of_research_detail_df.set_index("0", inplace=True)
+        type_of_research_detail_df = type_of_research_detail_df["research_types"].explode().to_frame()
         # save the output
-        type_of_research_detail_df.write_csv(self.output_folder_path + "type_of_research_detail.csv")  
+        type_of_research_detail_df.to_csv(self.output_folder_path + "type_of_research_detail.csv")  
         logger.info("type_of_research_detail.csv saved") 
         pass
 
-    def get_cv_model_name(self):
-        def extract_cv_model_name(text):
-            # final list of cv_model_name
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about type, source and size
-                if len(type_source_size) == 1:
-                    continue
+    def get_cv_model(self):
+        # add {'cv': } around the string without it
+        def add_cv(x):
+            if "cv" not in x:
+                return "{'cv_models': " + x + "}"
+            else:
+                return x
+
+        def add_brackets_to_string(s):
+            # Locate the first occurrence of ':'
+            index = s.find(':')
+            if index == -1:
+                # If there's no colon, return the original string (This should not happen in your example)
+                return s
+            # Add the opening bracket after the colon and space
+            s = s[:index + 2] + "[" + s[index + 2:]
+            # Add the closing bracket just before the last }
+            # check if the last character is a }
+            if s[-1] == '}':
+                # If it is, add the bracket before it
+                s = s[:-1] + "]" + s[-1:]
+            else:
+                s = None
+            return s
+
+        def ast_literal_eval(x):
+            try:
+                return ast.literal_eval(x)
+            except:
+                x = add_brackets_to_string(x)
+                if (x != "{'cv_models': [not applicable]}") & (x != None):
+                    return ast.literal_eval(x)
                 else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        continue
-                    if "not" not in type_source_size[1].strip().lower():
-                        # subjective type
-                        cv_model_name = type_source_size[0].strip()
-                    else:
-                        continue
-                # remove the digits and the period at the start of the string
-                pattern = "^\d+\.\s" # pattern to match one or more digits followed by a period and a space at the start of the string
-                replacement = ""
-                cv_model_name = re.sub(pattern, replacement, cv_model_name).lower() 
-                final_list.append(cv_model_name)
-            return final_list
+                    return None
         
         logger.info("Extracting cv_model_name")
         
         # check if the file exists
-        if Path(self.output_folder_path + "cv_model_name.csv").exists():
-            logger.info("cv_model_name.csv already exists. Skipping this step.")
+        if Path(self.output_folder_path + "cv_model.csv").exists():
+            logger.info("cv_model.csv already exists. Skipping this step.")
             return
         
-        cv_model_name_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("8")
-                .apply(lambda x: extract_cv_model_name(x))
-                .alias("cv_model_name")
-            ])
-            .explode("cv_model_name")
-            .select(["DOI", "cv_model_name"]))
+        cv_model_df = self.input_df[["0", "9"]]
+        cv_model_df["label_dict"] = cv_model_df.iloc[:, 1].apply(lambda x: add_cv(x))
+        cv_model_df = cv_model_df[cv_model_df["label_dict"].notnull()]
+        cv_model_df["label_dict"] = cv_model_df['label_dict'].apply(lambda x: ast_literal_eval(x))
+        cv_model_df = cv_model_df.join(pd.json_normalize(cv_model_df["label_dict"]))
+        cv_model_df.set_index("0", inplace=True)
+        cv_model_df = cv_model_df["cv_models"].explode().to_frame().reset_index()
+        # Filter rows where the list has exactly 3 elements
+        cv_model_df = cv_model_df.dropna(subset=['cv_models'])
+        cv_model_df = cv_model_df[cv_model_df['cv_models'].apply(len) == 3]
+        # Explode the list column into multiple columns
+        cv_model_df = pd.DataFrame(cv_model_df['cv_models'].to_list(), index=cv_model_df["0"])
+        
         # save the output
-        cv_model_name_df.write_csv(self.output_folder_path + "cv_model_name.csv")  
-        logger.info("cv_model_name.csv saved") 
+        cv_model_df.to_csv(self.output_folder_path + "cv_model.csv")  
+        logger.info("cv_model.csv saved") 
         pass
-    
-    def get_cv_model_purpose(self):
-        def extract_cv_model_purpose(text):
-            # final list of cv_model_purpose
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about source, source and size
-                if len(type_source_size) == 1:
-                    continue
-                else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        continue
-                    if "not" not in type_source_size[1].strip().lower():
-                        # subjective source
-                        cv_model_purpose = type_source_size[1].strip().lower()
-                    else:
-                        continue
-                final_list.append(cv_model_purpose.lower())
-            return final_list
-        
-        logger.info("Extracting cv_model_purpose")
-        
-        # check if the file exists
-        if Path(self.output_folder_path + "cv_model_purpose.csv").exists():
-            logger.info("cv_model_purpose.csv already exists. Skipping this step.")
-            return
-        
-        cv_model_purpose_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("8")
-                .apply(lambda x: extract_cv_model_purpose(x))
-                .alias("cv_model_purpose")
-            ])
-            .explode("cv_model_purpose")
-            .select(["DOI", "cv_model_purpose"]))
-        # save the output
-        cv_model_purpose_df.write_csv(self.output_folder_path + "cv_model_purpose.csv")  
-        logger.info("cv_model_purpose.csv saved") 
-        pass
-    
-    def get_cv_model_training(self):
-        def extract_cv_model_training(text):
-            # final list of cv_model_training
-            final_list = []
-            text_list = text.split("\n")
-            for text_line in text_list:
-                type_source_size = text_line.split(":")
-                # if the length of the list is 1, then there's likely no information about source, source and size
-                if len(type_source_size) < 3:
-                    continue
-                else:
-                    # check if the second element contains "not"
-                    # check if there're more than one "not" in the text_line
-                    if text_line.lower().count("not") > 1:
-                        continue
-                    if "not" not in type_source_size[2].strip().lower():
-                        # subjective source
-                        cv_model_training = type_source_size[2].strip()
-                    else:
-                        continue
-                final_list.append(cv_model_training.lower())
-            return final_list
-        
-        logger.info("Extracting cv_model_training")
-        
-        # check if the file exists
-        if Path(self.output_folder_path + "cv_model_training.csv").exists():
-            logger.info("cv_model_training.csv already exists. Skipping this step.")
-            return
-        
-        cv_model_training_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("8")
-                .apply(lambda x: extract_cv_model_training(x))
-                .alias("cv_model_training")
-            ])
-            .explode("cv_model_training")
-            .select(["DOI", "cv_model_training"]))
-        # save the output
-        cv_model_training_df.write_csv(self.output_folder_path + "cv_model_training.csv")  
-        logger.info("cv_model_training.csv saved") 
-        pass
-    
+
     def get_code_availability(self):
-        def extract_code_availability(text):
-            return text.replace(".", "").strip().lower()
-        
         logger.info("Extracting code_availability")
         
         # check if the file exists
@@ -588,15 +471,13 @@ class InfoExtracter:
             logger.info("code_availability.csv already exists. Skipping this step.")
             return
         
-        code_availability_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("9")
-                .apply(lambda x: extract_code_availability(x))
-                .alias("code_availability")
-            ])
-            .select(["DOI", "code_availability"]))
+        code_availability_df = self.input_df[["0", "10"]]
+        code_availability_df = code_availability_df[code_availability_df["10"] != 'not mentioned']
+        code_availability_df["label_dict"] = code_availability_df.iloc[:,1].apply(lambda x: ast.literal_eval(x))
+        code_availability_df = code_availability_df.join(pd.json_normalize(code_availability_df["label_dict"]))
+        code_availability_df = code_availability_df[['0', 'code_availability']]
         # save the output
-        code_availability_df.write_csv(self.output_folder_path + "code_availability.csv")  
+        code_availability_df.to_csv(self.output_folder_path + "code_availability.csv")  
         logger.info("code_availability.csv saved") 
         pass
     
@@ -611,15 +492,13 @@ class InfoExtracter:
             logger.info("data_availability.csv already exists. Skipping this step.")
             return
         
-        data_availability_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("10")
-                .apply(lambda x: extract_data_availability(x))
-                .alias("data_availability")
-            ])
-            .select(["DOI", "data_availability"]))
+        data_availability_df = self.input_df[["0", "11"]]
+        data_availability_df = data_availability_df[data_availability_df["11"] != 'not mentioned']
+        data_availability_df["label_dict"] = data_availability_df.iloc[:,1].apply(lambda x: ast.literal_eval(x))
+        data_availability_df = data_availability_df.join(pd.json_normalize(data_availability_df["label_dict"]))
+        data_availability_df = data_availability_df[['0', 'data_availability']]
         # save the output
-        data_availability_df.write_csv(self.output_folder_path + "data_availability.csv")  
+        data_availability_df.to_csv(self.output_folder_path + "data_availability.csv")  
         logger.info("data_availability.csv saved") 
         pass
     
@@ -631,33 +510,46 @@ class InfoExtracter:
             logger.info("irb.csv already exists. Skipping this step.")
             return
         
-        irb_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("11")
-                .alias("irb")
-            ])
-            .select(["DOI", "irb"]))
+        irb_df = self.input_df[["0", "12"]]
+        irb_df = irb_df[irb_df["12"] != 'not mentioned']
+        irb_df["label_dict"] = irb_df.iloc[:,1].apply(lambda x: ast.literal_eval(x))
+        irb_df = irb_df.join(pd.json_normalize(irb_df["label_dict"]))
+        irb_df = irb_df[['0', 'irb_approval']]
         # save the output
-        irb_df.write_csv(self.output_folder_path + "irb.csv")  
+        irb_df.to_csv(self.output_folder_path + "irb.csv")  
         logger.info("irb.csv saved") 
         pass
 
     def get_limitation_future_opportunity(self):
+        def check_and_fix(x):
+            # check if x starts and ends with {}
+            if not x.startswith("{"):
+                return "{" + x
+            if not x.endswith("}"):
+                return x + "}"
+            return x
+                
+        def ast_literal_eval(x):
+            try:
+                return ast.literal_eval(x)
+            except:
+                x = check_and_fix(x)
+                return ast.literal_eval(x)      
         logger.info("Extracting limitation_future_opportunity")
         
-        # # check if the file exists
-        # if Path(self.output_folder_path + "limitation_future_opportunity.csv").exists():
-        #     logger.info("limitation_future_opportunity.csv already exists. Skipping this step.")
-        #     return
+        # check if the file exists
+        if Path(self.output_folder_path + "limitation_future_opportunity.csv").exists():
+            logger.info("limitation_future_opportunity.csv already exists. Skipping this step.")
+            return
         
-        limitation_future_opportunity_df = (self.input_df.with_columns([
-            pl.col("0").alias("DOI"),
-            pl.col("12")
-                .str.replace_all("\n", " ")
-                .alias("limitation_future_opportunity")
-            ])
-            .select(["DOI", "limitation_future_opportunity"]))
+        limitation_future_opportunity_df = self.input_df[["0", "13"]]
+        limitation_future_opportunity_df['label_dict'] = limitation_future_opportunity_df.iloc[:,1]
+        limitation_future_opportunity_df["label_dict"] = limitation_future_opportunity_df['label_dict'].apply(lambda x: ast_literal_eval(x))
+        limitation_future_opportunity_df = limitation_future_opportunity_df.join(pd.json_normalize(limitation_future_opportunity_df["label_dict"]))
+        limitation_future_opportunity_df["limitations"] = limitation_future_opportunity_df["limitations"].apply(lambda x: ' '.join(x))
+        limitation_future_opportunity_df["future_research_opportunities"] = limitation_future_opportunity_df["future_research_opportunities"].apply(lambda x: ' '.join(x))
+        limitation_future_opportunity_df = limitation_future_opportunity_df[["0", "limitations", "future_research_opportunities"]]
         # save the output
-        limitation_future_opportunity_df.write_csv(self.output_folder_path + "limitation_future_opportunity.csv")  
+        limitation_future_opportunity_df.to_csv(self.output_folder_path + "limitation_future_opportunity.csv")  
         logger.info("limitation_future_opportunity.csv saved") 
         pass 
