@@ -158,7 +158,7 @@ class InfoExtracter:
         extent_df = self.input_df[["0", "3"]]
         extent_df["label_dict"] = extent_df.iloc[:,1].apply(lambda x: ast.literal_eval(x))
         extent_df = extent_df.join(pd.json_normalize(extent_df["label_dict"]))
-        extent = extent_df[['0', 'extent']]
+        extent_df = extent_df[['0', 'extent']]
         # save the output
         extent_df.to_csv(self.output_folder_path + "extent.csv")  
         logger.info("extent.csv saved")
@@ -553,3 +553,33 @@ class InfoExtracter:
         limitation_future_opportunity_df.to_csv(self.output_folder_path + "limitation_future_opportunity.csv")  
         logger.info("limitation_future_opportunity.csv saved") 
         pass 
+
+    # quick and dirty functions for the 3rd round of coding
+    def _get_aspect_3rd_round(self):
+        # check if the file exists
+        if Path(self.output_folder_path + "aspect.csv").exists():
+            logger.info("aspect.csv already exists. Skipping this step.")
+            return
+        aspect_df = self.input_df[["0", "1"]]
+        aspect_df['label_dict'] = aspect_df.iloc[:,1]
+        aspect_df["label_dict"] = aspect_df['label_dict'].apply(lambda x: ast.literal_eval(x))
+        aspect_df = aspect_df.join(pd.json_normalize(aspect_df["label_dict"]))
+        aspect_df = aspect_df[["0", "aspect"]]
+        # save the output
+        aspect_df.to_csv(self.output_folder_path + "aspect.csv")
+        logger.info("aspect.csv saved")  
+    
+        # quick and dirty functions for the 3rd round of coding
+    def _get_perception_3rd_round(self):
+        # check if the file exists
+        if Path(self.output_folder_path + "perception.csv").exists():
+            logger.info("perception.csv already exists. Skipping this step.")
+            return
+        perception_df = self.input_df[["0", "2"]]
+        perception_df['label_dict'] = perception_df.iloc[:,1]
+        perception_df["label_dict"] = perception_df['label_dict'].apply(lambda x: ast.literal_eval(x))
+        perception_df = perception_df.join(pd.json_normalize(perception_df["label_dict"]))
+        perception_df = perception_df[["0", "perception"]]
+        # save the output
+        perception_df.to_csv(self.output_folder_path + "perception.csv")
+        logger.info("perception.csv saved")  

@@ -8,9 +8,10 @@ nltk.download('averaged_perceptron_tagger')
 from nltk.tokenize import word_tokenize
 import pandas as pd
 from pathlib import Path
+import unidecode
 
-from write_review import ReviewWriter
-from recalibrate import Recalibrator
+from src.models.write_review import ReviewWriter
+from src.models.recalibrate import Recalibrator
 
 def remove_articles_and_prepositions(text):
     # Tokenize the text into individual words
@@ -20,7 +21,8 @@ def remove_articles_and_prepositions(text):
     tagged_words = nltk.pos_tag(words)
 
     # Filter out articles and prepositions
-    filtered_words = [word for word, pos in tagged_words if pos not in ['DT', 'IN']]
+    filtered_words = [unidecode.unidecode(word) for word, pos in tagged_words if pos not in ['DT', 'IN'] and\
+        word not in ['a', 'an', 'the', '“', "'", "``","."]]
 
     # Join the remaining words back into a string
     filtered_text = ' '.join(filtered_words)
@@ -28,12 +30,12 @@ def remove_articles_and_prepositions(text):
     return filtered_text
 
 def get_latex_abbreviations(author: str, title: str, year: str) -> str:
-    author_first_name = author.lower().replace(" ", "")
+    author_first_name = unidecode.unidecode(author.split("., ")[0].split(" ")[0].lower())
     title_first_word = remove_articles_and_prepositions(title).split(" ")[0].lower()
     return f"Abbreviation: {author_first_name}_{title_first_word}_{year} \n"
     
 def get_latex_citation(author: str, title: str, year: str) -> str:
-    author_first_name = author.lower().replace(" ", "")
+    author_first_name = unidecode.unidecode(author.split("., ")[0].split(" ")[0].lower())
     title_first_word = remove_articles_and_prepositions(title).split(" ")[0].lower().replace("-", "")
     return f"\\citet{{{author_first_name}_{title_first_word}_{year}}}"
 

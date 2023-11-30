@@ -29,7 +29,12 @@ class StudySummary(BaseModel):
     #     elif v not in valid_aspects:
     #         raise ValueError(f'Invalid aspect. Must be one of {valid_aspects} or start with "others:"')
     #     return v
-
+class Aspect(BaseModel):
+    aspect: str
+    
+class Perception(BaseModel):
+    perception: str
+    
 class StudyArea(BaseModel):
     study_area: List[Dict[str, str]]
     extent: str

@@ -26,17 +26,27 @@ class CSV2RISConverter:
         self.remap = {
             "record_id": "id",
             "included": "custom1",
-            "asreview_ranking": "custom2"
+            "asreview_ranking": "custom2",
+            "Source title": "journal_name",
         }
 
-    # process lists
+    # Updated process method to handle authors separately
     def process(self, instr: str, key: str):
         if len(instr) == 0:
             return instr
         elif instr.strip()[0] == '[' and instr.strip()[-1] == "]":
             return eval(instr)
         elif key == "Authors": 
-            return instr.split(".,") 
+            authors = instr.split(",")
+            split_authors = []
+            for author in authors:
+                parts = author.strip().rsplit(" ", 1)  # Split on the last space
+                if len(parts) == 2:
+                    last_name, initials = parts
+                    split_authors.append(last_name + ", " + initials)
+                else:
+                    split_authors.append(author)
+            return split_authors
         else:
             return instr
 
@@ -45,13 +55,18 @@ class CSV2RISConverter:
         entries = []
 
         print("Reading CSV...")
-        with open(self.csv_file_name) as csvfile:
+        with open(self.csv_file_name, mode='r', encoding='utf-8-sig') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
-                ris_dict = OrderedDict([(self.remap[k], self.process(v,k)) if k in self.remap.keys() else (k, self.process(v,k)) for k, v in row.items()])
+                ris_dict = OrderedDict(
+                    [(self.remap[k], self.process(v,k)) if k in self.remap.keys() 
+                     else (k, self.process(v,k)) 
+                     for k, v in row.items()]
+                )
                 entries.append(ris_dict)
 
         print("Writing RIS...")
         with open(self.ris_file_name, "w") as risfile:
-            rispy.dump(entries, risfile)
+            rispy.dump(entries, risfile, skip_unknown_tags=True)
+
 

@@ -30,7 +30,14 @@ from parsers import (
     StudyFeedback
 )
 
-def main(initial_input_csv: str, input_filepath: str, temp_output_path: str, final_output_path: str, question_text_path: str, openai_api_key: str, parser_classes: list):
+def main(initial_input_csv: str, 
+        input_filepath: str, 
+        temp_output_path: str, 
+        final_output_path: str, 
+        question_text_path: str, 
+        output_filename: str,
+        openai_api_key: str, 
+        parser_classes: list):
     """ Runs data processing scripts to turn raw data from (../raw) into
         cleaned data ready to be analyzed (saved in ../processed).
     """
@@ -48,13 +55,13 @@ def main(initial_input_csv: str, input_filepath: str, temp_output_path: str, fin
     logger.info('Running Q&A')
     # save qa results with today's date
     # today = date.today()
-    reviewer.qa_from_folder(input_filepath, os.path.join(temp_output_path, "qa_result_2023-07-19.json"))
+    reviewer.qa_from_folder(input_filepath, os.path.join(temp_output_path, (output_filename + ".json")))
     
     # extract information
     info_extracter = InfoExtracter(initial_input_csv, 
-                                os.path.join(temp_output_path,"qa_result_2023-07-19.csv"), 
+                                os.path.join(temp_output_path,(output_filename + ".csv")), 
                                 final_output_path)
-    info_extracter.check_unaswered_papers()
+    # info_extracter.check_unaswered_papers()
     info_extracter.get_summary()
     info_extracter.get_aspect()
     info_extracter.get_location()
@@ -96,9 +103,17 @@ if __name__ == '__main__':
     ]
     output_parsers = [PydanticOutputParser(pydantic_object = cls) for cls in classes]
     temp_output_path = "data/interim/"
-    final_output_path = "data/processed/2nd_run/"
+    final_output_path = "data/processed/3rd_run/"
+    output_filename = "qa_result_2023-07-19"
     # get api keys for openai and huggingface
     load_dotenv(find_dotenv())
     openai_api_key = os.getenv('OPENAI_API_KEY')
     huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
-    main(initial_input_csv, input_path, temp_output_path, final_output_path, question_text_path, str(openai_api_key), output_parsers)
+    main(initial_input_csv, 
+        input_path, 
+        temp_output_path, 
+        final_output_path, 
+        question_text_path, 
+        output_filename, 
+        str(openai_api_key), 
+        output_parsers)

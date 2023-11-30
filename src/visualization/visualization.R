@@ -1,7 +1,6 @@
 pacman::p_load(tidyverse, hrbrthemes, scales, paletteer, sf, basemaps, ggalluvial,
-               ggrepel, xtable, stringdist, dendextend, ggpattern)
-
-round <- "2nd_run"
+               ggrepel, xtable, stringdist, dendextend, ggpattern, tidytext, ggwordcloud,
+               scales, viridis, cowplot)
 
 theme_custom <- function(...){
   theme_ipsum() +
@@ -21,13 +20,108 @@ theme_custom <- function(...){
           strip.text = element_text(colour = "white"),
           ...)
 }
-
+round <- "3rd_run"
 dir_figure <- paste0("reports/figures/", round, "/")
 if (!dir.exists(dir_figure)){
   dir.create(dir_figure)
 }
 
-# citations ---------------------------------------------------------------
+# word cloud ---------------------------------------------------------------
+citation_df <- read.csv(paste0("data/processed/", round, "/citation_df.csv"))
+aspect <- read.csv(paste0("data/processed/", round, "/aspect.csv")) %>% 
+  mutate(improved_aspect = case_when(
+    str_detect(improved_aspect, "greenery") | str_detect(improved_aspect, "waterscapes") ~ "green and blue space",
+    str_detect(improved_aspect, "infrastructure") ~ "street design",
+    T ~ improved_aspect
+  ))
+# join them by "0"
+joined_df <- left_join(citation_df, aspect, by="X0")
+# loop through each unique aspect and create a word cloud
+set.seed(42)
+for (i in unique(joined_df$improved_aspect)){
+  print(i)
+  # filter the joined_df by the aspect
+  filtered_df <- joined_df %>% filter(improved_aspect==i) %>% 
+    unnest_tokens(word, Abstract) %>%
+    count(word, sort = TRUE) %>% 
+    anti_join(stop_words) %>% 
+    filter(!word %in% c("study", "results")) %>% 
+    top_n(20)
+  print(filtered_df %>% head(20))
+  ggplot(filtered_df) +
+    geom_text_wordcloud(aes(label = word, size = n, color = factor(sample.int(7, nrow(filtered_df), replace = TRUE))), rm_outside = TRUE) +
+    paletteer::scale_color_paletteer_d("MetBrewer::Veronese") +
+    scale_size_area(max_size = 35) +
+    theme_ipsum()
+  ggsave(paste0(dir_figure, "wordcloud_", i, ".png"), width = 10, height = 10)
+}
+
+# heatmap -----------------------------------------------------------------
+citation_df <- read.csv(paste0("data/processed/", round, "/citation_df.csv"))
+aspect <- read.csv(paste0("data/processed/", round, "/aspect.csv")) %>% 
+  mutate(improved_aspect = case_when(
+    str_detect(improved_aspect, "greenery") | str_detect(improved_aspect, "waterscapes") ~ "green and blue space",
+    str_detect(improved_aspect, "infrastructure") ~ "street design",
+    T ~ improved_aspect
+  ))
+# join them by "0"
+joined_df <- left_join(citation_df, aspect, by="X0")
+# group by aspect and year and count the number of papers
+grouped_df <- joined_df %>%
+  # convert any year before 2000 to 2000
+  mutate(Year = if_else(Year < 2000, 2000, Year)) %>%
+  group_by(improved_aspect, Year) %>% 
+  summarize(count = n(), .groups = 'drop') %>% 
+  drop_na(improved_aspect) %>% 
+  filter(improved_aspect != "others") %>% 
+  mutate(improved_aspect = factor(improved_aspect, levels = unique(improved_aspect))) %>%
+  # fill in the missing years between 2000 and 2023 for each unique aspect and set the count to 0
+  complete(improved_aspect, Year = 2000:2023, fill = list(count = 0)) %>%
+  mutate(count = if_else(count > 20, 20, count)) %>%
+  arrange(improved_aspect, Year)
+
+# create a heatmap with ggplot
+ggplot(grouped_df, aes(x = Year, y = improved_aspect, fill = count)) +
+  geom_tile(color = "white") +
+  scale_fill_viridis(
+    name = "",  # Remove legend title
+    option = "magma",
+    limits = c(0, 20),  # Set legend limits
+    breaks = c(0, 5, 10, 15, 20),  # Set legend breaks (corrected to include 20)
+    labels = c("0", "5", "10", "15", ">=20")  # Set legend labels (removed ">=" for consistency)
+  ) +
+  labs(
+    x = "Year",
+    y = "",
+    title = "Number of papers by aspect and year",  # Add plot title
+    caption = "Data: papers downloaded from Scopus on 2023/08/15"
+  ) +
+  theme_ipsum(base_size = 20) +  # Adjust base_size for overall text size
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.direction = "horizontal",
+    legend.position = "bottom",
+    legend.box.just = "center",  # Center the legend box
+    legend.title = element_blank(),  # Remove legend title
+    legend.key.width = unit(2, "cm"),  # Make legend keys wider
+    plot.margin = margin(0, 0, 0, 0),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    plot.title.position = "panel",
+    plot.title = element_text(face = "plain",vjust = -50, hjust = 0.53),  # Remove the plot title here
+    # plot.caption = element_text(hjust = 0.5)  # Center the plot caption
+  ) +
+  scale_x_continuous(
+    breaks = c(2000, 2005, 2010, 2015, 2020, 2023),
+    labels = c("1972-2000", "2005", "2010", "2015", "2020", "2023")
+  ) +
+  coord_fixed(ratio = 1) +  # Set aspect ratio to 1 for square tiles
+  theme(plot.margin = unit(c(1, 1, 3, 1), "lines")) +  # Increase the bottom margin
+  labs(title = "Number of papers in the year")  # Add title and subtitle
+# save
+ggsave(paste0(dir_figure, "heatmap.png"), width = 10, height = 5)
+  # citations ---------------------------------------------------------------
 citations <- read.csv(paste0("data/processed/", round, "/citation_df.csv")) %>% 
   dplyr::select(record_id, X0)
 
@@ -46,7 +140,9 @@ journal_year <- read.csv("data/external/asreview_dataset_all_visual-urban-percep
   summarize(count=n()) %>% 
   drop_na(Source.title) %>% 
   filter(Source.title %in% journal$Source.title) %>% 
-  left_join(journal,by="Source.title")
+  left_join(journal,by="Source.title") %>% 
+  # remove everything inside () in Source.title
+  mutate(Source.title = str_replace_all(Source.title, "\\(.*\\)", ""))
 
 
 ggplot(journal_year) +
@@ -56,12 +152,22 @@ ggplot(journal_year) +
        y = "number of papers",
        title = "Journals/conferences by the number of papers",
        caption = "Data: papers downloaded from Scopus on 2023/08/15") +
-  paletteer::scale_fill_paletteer_c("viridis::magma") +
+  paletteer::scale_fill_paletteer_c("scico::vik") +
   coord_flip() +
-  theme_custom(panel.grid.major = element_blank(),
-               panel.grid.minor = element_blank(),
-               plot.margin = margin(0, 0, 0, 0))
-ggsave(paste0(dir_figure, "jounral.png"), width = 20, height = 11)
+  theme_ipsum() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = margin(0, 0, 0, 0),
+        # set the x-axis text size
+        axis.text.y = element_text(size = 30),
+        # set title size
+        plot.title.position = "plot",
+        plot.title = element_text(size = 40,
+                                hjust = 0.5))
+  # theme_custom(panel.grid.major = element_blank(),
+  #              panel.grid.minor = element_blank(),
+  #              plot.margin = margin(20, 20, 20, 20))
+ggsave(paste0(dir_figure, "journal.png"), width = 20, height = 11)
 
 # number of papers --------------------------------------------------------
 scopus_initial <- read.csv("data/external/scopus_input.csv") %>% 
@@ -90,7 +196,7 @@ print(gg)
 ggsave(paste0(dir_figure, "num_papers.png"), width = 5, height = 5)
 
 # aspect ------------------------------------------------------------------
-aspect <- read.csv(paste0("data/processed/", round, "/recalibrated_aspect.csv")) %>% 
+aspect <- read.csv(paste0("data/processed/", round, "/aspect.csv")) %>% 
   distinct(X0, improved_aspect) %>% 
   left_join(citations, by = "X0") %>%
   filter(!is.na(record_id)) %>% 
@@ -101,11 +207,13 @@ aspect <- read.csv(paste0("data/processed/", round, "/recalibrated_aspect.csv"))
     count = n(),
     aspect = case_when(
     X0 == "978-3-319-95588-9_67.pdf" ~ "public space",
+    str_detect(improved_aspect, "greenery") | str_detect(improved_aspect, "waterscapes") ~ "green and blue space",
     str_detect(aspect, "reclassify the aspect of the study") ~ "greenery",
     str_detect(aspect, "others: study methodology") ~ "landscape",
     str_detect(aspect, "others: sensory perception") ~ "landscape",
     str_detect(aspect, "others: visual aesthetics") ~ "landscape",
     str_detect(aspect, "others: population prediction") ~ "public space",
+    str_detect(aspect, "infrastructure") ~ "street design",
     TRUE ~ aspect)) %>% 
   group_by(aspect) %>% 
   summarize(count=n()) %>% 
@@ -122,24 +230,26 @@ selected_colors <- palette[indices]
 original_pastel_palette <- c("#B6A6D2FF", "#D2A9AFFF", "#E8B57DFF", "#EDE3A9FF", "#8AA5A0FF", 
                              "#A2C5B4FF", "#C7C48DFF", "#D7B0B2FF", "#C89A76FF", "#56B0A3FF", 
                              "#7F9FC2FF", "#D4B5C3FF", "#A2E0CEFF")
-ggplot(aspect) +
+aspect_plot <- ggplot(aspect) +
   geom_col(aes(x=dummy, y=count, fill = aspect), 
            position = "fill",
-           width = 1) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
-  scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
-  # paletteer::scale_fill_paletteer_d("rcartocolor::Antique", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = original_pastel_palette, guide = guide_legend(reverse = TRUE)) +
+  scale_x_discrete(expand = expansion(add = c(0.8, 0))) +
+  scale_fill_manual(values = original_pastel_palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
-  labs(x="", fill = "", title = "Aspects of the built environment",
-       subtitle = "studied by reviewed papers") +
+  labs(x = "", fill = "", title = "Aspects of the built environment",
+       subtitle = NULL) + # Remove the subtitle
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
-ggsave(paste0(dir_figure, "aspects.png"), width = 10, height = 4)
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))  # Increase the margin size
 
+ggsave(paste0(dir_figure, "aspects.png"), width = 10, height = 4)
 
 # location ----------------------------------------------------------------
 location <- read.csv(paste0("data/processed/", round, "/location.csv")) %>% 
@@ -186,21 +296,25 @@ extent <- read.csv(paste0("data/processed/", round, "/extent.csv")) %>%
   summarize(count=n()) %>% 
   mutate(dummy="") 
 happy_pastel_palette_adjusted <- c("#8A89B3FF", "#9FC3C1FF", "darkgray", "#D6A3A5FF", "#EED9B3FF", "#B2C2A9FF")
-ggplot(extent) +
+extent_plot <- ggplot(extent) +
   geom_col(aes(x=dummy, y=count, fill = reorder(extent, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
-  scale_fill_manual(values = happy_pastel_palette_adjusted, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = happy_pastel_palette_adjusted, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Extent of study areas",
-       subtitle = "among reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "extent.png"), width = 10, height = 4)
 
 
@@ -235,22 +349,26 @@ color_palette <- c("aerial image" = palette[1],
 # Darker color palette
 # Even darker color palette harmonized with your provided colors
 lighter_pastel_palette <- c("#9FCBB2", "#9FAFCC", "#A098C2", "#D69BA3", "#F5B89F", "#D5C5A8", "#DFA7B9")
-ggplot(image_data_type) +
+image_data_type_plot <- ggplot(image_data_type) +
   geom_col(aes(x=dummy, y=count, fill = reorder(image_data_type, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
   # paletteer::scale_fill_paletteer_d("nord::aurora", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = lighter_pastel_palette, guide = guide_legend(reverse = TRUE)) + # Add custom color palette
+  scale_fill_manual(values = lighter_pastel_palette, guide = guide_legend(nrow = 2, reverse = TRUE)) + # Add custom color palette
   coord_flip() +
   labs(x="", fill = "", title = "Image data types",
-       subtitle = "used by reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "image_data_type.png"), width = 10, height =4)
 
 
@@ -281,22 +399,26 @@ subjective_data_type <- read.csv(paste0("data/processed/", round, "/perception_d
   summarize(count=sum(count)) %>% 
   mutate(dummy="") 
 color_palette <- c("publicly available data" = "#eec643", "their own collection" = "darkgray")
-ggplot(subjective_data_type) +
+subjective_data_type_plot <- ggplot(subjective_data_type) +
   geom_col(aes(x=dummy, y=count, fill = reorder(subjective_data_type, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
   # paletteer::scale_fill_paletteer_d("nord::algoma_forest", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = color_palette, guide = guide_legend(reverse = TRUE)) + # Add custom color palette
+  scale_fill_manual(values = color_palette, guide = guide_legend(nrow = 2, reverse = TRUE)) + # Add custom color palette
   coord_flip() +
   labs(x="", fill = "", title = "Subjective data types",
-       subtitle = "used by reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "subjective_data_type.png"), width = 10, height = 4)
 
 
@@ -313,7 +435,7 @@ subjective_data_source <- read.csv(paste0("data/processed/", round, "/subjective
   summarize(count=sum(count)) %>% 
   mutate(dummy="") 
 palette <- paletteer::paletteer_d("ggthemes::excel_Main_Event")[2:(length(unique(subjective_data_source$subjective_data_source))+1)]
-ggplot(subjective_data_source) +
+subjective_data_source_plot <- ggplot(subjective_data_source) +
   geom_col(aes(x=dummy, y=count, fill = reorder(subjective_data_source, count)), 
            position = "fill",
            width = 0.8) +
@@ -324,11 +446,15 @@ ggplot(subjective_data_source) +
   scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Subjective data sources",
-       subtitle = "used by reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        # make the title size bigger
+        plot.title = element_text(size = 25),
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "subjective_data_source.png"), width = 10, height = 4)
 
 
@@ -353,7 +479,7 @@ ggplot(subjective_data_size) +
        subtitle = "analyzed by reviewed papers",
        caption = "") +
   theme_ipsum() +
-  theme(plot.margin = margin(0, 0, 0, 0))
+  theme(plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "subjective_data_size.png"), width = 10, height = 4)
 
 
@@ -382,7 +508,7 @@ ggplot(other_sensory_data) +
   scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Non-visual sensory data",
-       subtitle = "used by reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank())
@@ -403,21 +529,25 @@ type_of_research <- read.csv(paste0("data/processed/", round, "/type_of_research
   mutate(dummy="") %>% 
   filter(research_type %in% c("qualitative", "quantitative", "mixed"))
 happy_pastel_palette <- c("#A5A5A5FF", "#FFDE8DFF", "#9E7AB4FF")
-ggplot(type_of_research) +
+type_of_research_plot <- ggplot(type_of_research) +
   geom_col(aes(x=dummy, y=count, fill = reorder(research_type, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
-  scale_fill_manual(values = happy_pastel_palette, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = happy_pastel_palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
-  labs(x="", fill = "", title = "Type of research among reviewed papers",
-       subtitle = "") +
+  labs(x="", fill = "", title = "Overall types of research",
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "type_of_research.png"), width = 10, height = 4)
 
 # type_of_research_detail ----------------------------------------------------
@@ -446,22 +576,26 @@ type_of_research_detail <- read.csv(paste0("data/processed/", round, "/type_of_r
   summarize(count=n()) %>% 
   mutate(dummy="")
 palette <- c("#8FA587FF", "#F7B374FF", "#E49E7DFF", "#A9887CFF", "#BFAE8DFF")
-ggplot(type_of_research_detail) +
+type_of_research_detail_plot <- ggplot(type_of_research_detail) +
   geom_col(aes(x=dummy, y=count, fill = reorder(type_of_research_detail, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
   # paletteer::scale_fill_paletteer_d("ggthemes::stata_s2color", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
-  labs(x="", fill = "", title = "Type of research among reviewed papers",
-       subtitle = "") +
+  labs(x="", fill = "", title = "Detailed types of research",
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "type_of_research_detail.png"), width = 10, height = 4)
 
 # cv_model_purpose ----------------------------------------------------
@@ -483,22 +617,26 @@ cv_model_purpose <- read.csv(paste0("data/processed/", round, "/cv_model.csv")) 
   summarize(count=n()) %>% 
   mutate(dummy="")
 palette <- c("#B7A4D4FF", "#E2ADC1FF", "#F5D379FF", "#F7BF8DFF", "#C0CEB0FF", "#7A8D5EFF", "#FEFDE4FF")
-ggplot(cv_model_purpose) +
+cv_model_purpose_plot <- ggplot(cv_model_purpose) +
   geom_col(aes(x=dummy, y=count, fill = reorder(cv_model_purpose, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
   # paletteer::scale_fill_paletteer_d("nord::mountain_forms", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Purposes of computer vision models",
-       subtitle = "used by the reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "cv_model_purpose.png"), width = 10, height = 4)
 
 # cv_model_training ----------------------------------------------------
@@ -518,21 +656,25 @@ cv_model_training <- read.csv(paste0("data/processed/", round, "/cv_model.csv"))
   summarize(count=n()) %>% 
   mutate(dummy="")
 palette <- c("#FBCB74FF", "darkgray", "#78D3D7FF", "#AED8A1FF", "#E8A3A0FF", "#A899A0FF")
-ggplot(cv_model_training) +
+cv_model_training_plot <- ggplot(cv_model_training) +
   geom_col(aes(x=dummy, y=count, fill = reorder(cv_model_training, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
-  scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Training processes for computer vision models",
-       subtitle = "used by the reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "cv_model_training.png"), width = 10, height = 4)
 
 
@@ -554,22 +696,26 @@ code_availability <- read.csv(paste0("data/processed/", round, "/code_availabili
   summarize(count=n()) %>% 
   mutate(dummy="")
 palette <- happy_pastel_palette_adjusted_6 <- c("#E7D38DFF", "darkgray", "#E89B8DFF", "#8DB0C5FF")
-ggplot(code_availability) +
+code_availability_plot <- ggplot(code_availability) +
   geom_col(aes(x=dummy, y=count, fill = reorder(code_availability, count)), 
            position = "fill",
-           width = 0.5) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
   # paletteer::scale_fill_paletteer_d("ggthemes::wsj_rgby", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Availability of code",
-       subtitle = "among the reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "code_availability.png"), width = 10, height = 4)
 
 
@@ -594,22 +740,26 @@ data_availability <- read.csv(paste0("data/processed/", round, "/data_availabili
   summarize(count=n()) %>% 
   mutate(dummy="")
 palette <- c("darkgray","#F2D48DFF", "#A8C7A7FF", "#A9A08AFF")
-ggplot(data_availability) +
+data_availability_plot <- ggplot(data_availability) +
   geom_col(aes(x=dummy, y=count, fill = reorder(data_availability, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
   # paletteer::scale_fill_paletteer_d("ggthemes::excel_Crop", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Availability of data",
-       subtitle = "among the reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "data_availability.png"), width = 10, height = 4)
 
 # irb ----------------------------------------------------
@@ -620,133 +770,171 @@ irb <- read.csv(paste0("data/processed/", round, "/irb.csv")) %>%
   filter(irb != "") %>% 
   mutate(irb = tolower(irb),
          irb = case_when(
-           str_detect(irb, "yes") ~ "Mentioned",
-           TRUE ~ "Not mentioned"
+           str_detect(irb, "yes") ~ "mentioned",
+           TRUE ~ "not mentioned"
          )) %>% 
   group_by(irb) %>% 
   summarize(count=n()) %>% 
   mutate(dummy="")
 palette <- c("darkgray", "#E8A5D4FF")
-ggplot(irb) +
+irb_plot <- ggplot(irb) +
   geom_col(aes(x=dummy, y=count, fill = reorder(irb, count)), 
            position = "fill",
-           width = 0.8) +
+           width = 0.7) +
   scale_y_continuous(name = "Percentage of publications", 
                      labels = scales::label_percent()) +
   scale_x_discrete(expand = expansion(add =c(0.8,0))) + # Add this line to control the space around the plot on the x-axis
   # paletteer::scale_fill_paletteer_d("ggthemes::excel_Crop", guide = guide_legend(reverse = TRUE)) +
-  scale_fill_manual(values = palette, guide = guide_legend(reverse = TRUE)) +
+  scale_fill_manual(values = palette, guide = guide_legend(nrow = 2, reverse = TRUE)) +
   coord_flip() +
   labs(x="", fill = "", title = "Approval from institutional review boards",
-       subtitle = "among the reviewed papers") +
+       subtitle = NULL) +
   theme_ipsum() +
   theme(legend.position = "bottom",
         panel.grid.major.y = element_blank(),
-        plot.margin = margin(0, 0, 0, 0))
+        plot.title = element_text(size = 25, margin = margin(b = 20)), # Move the title lower
+        plot.title.position = "plot",  # Position the title within the plot area
+        # make the legend text size bigger
+        legend.text = element_text(size = 20),
+        plot.margin = margin(20, 20, 20, 20))
 ggsave(paste0(dir_figure, "irb.png"), width = 10, height = 4)
 
+# combined plot ----------------------------------------------------
+combined_plot <- plot_grid(aspect_plot, extent_plot, image_data_type_plot,
+  cv_model_purpose_plot, cv_model_training_plot,
+  subjective_data_type_plot, type_of_research_plot, type_of_research_detail_plot, 
+  data_availability_plot, irb_plot, ncol = 2)
 
+# save 
+ggsave(paste0(dir_figure, "combined_plot.png"), width = 20, height = 15)
 # sankey diagram of all the attributes ------------------------------------
 aspect_sankey <- read.csv(paste0("data/processed/", round, "/aspect.csv")) %>% 
-  distinct(DOI, .keep_all = T) %>% 
-  group_by(aspect) %>% 
+  distinct(X0, .keep_all = T) %>% 
+  group_by(improved_aspect) %>% 
   mutate(
     count=n(),
-    aspect = case_when(
-    count < 2 ~ "others",
-    TRUE ~ aspect))
+    improved_aspect = case_when(
+      str_detect(improved_aspect, "greenery") | str_detect(improved_aspect, "waterscapes") ~ "green and blue space",
+      str_detect(improved_aspect, "infrastructure") ~ "street design",
+      TRUE ~ improved_aspect))
   
 extent_sankey <- read.csv(paste0("data/processed/", round, "/extent.csv")) %>% 
-  distinct(DOI, .keep_all = T) 
+  distinct(X0, .keep_all = T) 
 
-image_data_type_sankey <- read.csv(paste0("data/processed/", round, "/image_data_type.csv")) %>% 
+image_data_type_sankey <- read.csv(paste0("data/processed/", round, "/recalibrated_image_data_type.csv")) %>%
+  rename("image_data_type" = "X0.1") %>% 
   filter(image_data_type != "") %>% 
+  distinct(X0, image_data_type) %>% 
   group_by(image_data_type) %>% 
   mutate(
     count=n(),
     image_data_type = case_when(
-      count < 3 ~ "others",
+      image_data_type == "geo-tagged photos" ~ "geo-tagged images",
+      count < 3 ~ "non geo-tagged images",
       TRUE ~ image_data_type)) %>% 
-  group_by(DOI) %>% 
+  distinct(X0, image_data_type) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
          image_data_type=case_when(
-           count > 1 ~ "mixed",
+           count >= 3 ~ "others",
+           count == 2 & "virtual reality" %in% image_data_type ~ "virtual reality",
+           count == 2 & "video" %in% image_data_type ~ "video",
            T ~ image_data_type
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
+  distinct(X0, .keep_all = T) %>% 
   mutate(image_data_type=case_when(
     image_data_type == "" ~ "None",
     T ~ image_data_type
-  ))
+  )) %>% 
+  left_join(aspect_sankey, ., by = "X0") %>% 
+  mutate(image_data_type = case_when(
+    is.na(image_data_type) ~ "non geo-tagged images",
+    T ~ image_data_type
+  )) %>% 
+  select(X0, image_data_type)
 
-subjective_data_type_sankey <- read.csv(paste0("data/processed/", round, "/subjective_data_type.csv")) %>% 
+subjective_data_type_sankey <- read.csv(paste0("data/processed/", round, "/perception_data_type.csv")) %>% 
+  rename("subjective_data_type" = "X0.1") %>%
   mutate(subjective_data_type=case_when(
     str_detect(subjective_data_type, "public") ~ "publicly available data",
     str_detect(subjective_data_type, "subjective") ~ "their own collection",
     str_detect(subjective_data_type, "survey") ~ "their own collection",
     TRUE ~ subjective_data_type
   )) %>% 
-  filter(subjective_data_type=="publicly available data" | subjective_data_type=="their own collection") %>% 
-  group_by(DOI) %>% 
+  distinct(X0,subjective_data_type) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
          subjective_data_type=case_when(
            count > 1 ~ "mixed with publicly available data",
            T ~ subjective_data_type
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
-  mutate(subjective_data_type=case_when(
-    subjective_data_type == "" ~ "None",
+  distinct(X0,subjective_data_type, .keep_all = T) %>% 
+  mutate(
+    count=n(),
+    subjective_data_type=case_when(
+    count > 1 ~ "mixed with publicly available data",
+    str_detect(subjective_data_type, "survey") | str_detect(subjective_data_type, "own collection") ~ "their own collection",
+    is.na(subjective_data_type) ~ "their own collection",
+    subjective_data_type != "their own collection" & subjective_data_type != "mixed with publicly available data" ~ "mixed with publicly available data",
     T ~ subjective_data_type
-  ))
+  )) %>% 
+  left_join(aspect_sankey, ., by = "X0") %>% 
+  mutate(subjective_data_type = case_when(
+    is.na(subjective_data_type) ~ "their own collection",
+    T ~ subjective_data_type
+  )) %>%
+  select(X0, subjective_data_type)
 
-other_sensory_data_sankey <- read.csv(paste0("data/processed/", round, "/other_sensory_data.csv")) %>%
-  distinct(DOI,other_sensory_data) %>% 
-  group_by(DOI) %>%
-  mutate(flag = ifelse(any(other_sensory_data != "None"), 1, 0)) %>% 
-  ungroup() %>% 
-  filter(!(other_sensory_data=="None"&flag==1)) %>% 
-  distinct(DOI,other_sensory_data) %>% 
-  group_by(DOI) %>% 
-  mutate(count=n(),
-         other_sensory_data=case_when(
-           count > 1 ~ "mixed",
-           T ~ other_sensory_data
-         )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
-  mutate(other_sensory_data=case_when(
-    other_sensory_data == "" ~ "None",
-    T ~ other_sensory_data
-  ))
+#TODO don't use other_sensory_data_sankey for now
+# other_sensory_data_sankey <- read.csv(paste0("data/processed/", round, "/other_sensory_data.csv")) %>%
+#   distinct(DOI,other_sensory_data) %>% 
+#   group_by(DOI) %>%
+#   mutate(flag = ifelse(any(other_sensory_data != "None"), 1, 0)) %>% 
+#   ungroup() %>% 
+#   filter(!(other_sensory_data=="None"&flag==1)) %>% 
+#   distinct(DOI,other_sensory_data) %>% 
+#   group_by(DOI) %>% 
+#   mutate(count=n(),
+#          other_sensory_data=case_when(
+#            count > 1 ~ "mixed",
+#            T ~ other_sensory_data
+#          )) %>% 
+#   distinct(DOI, .keep_all = T) %>% 
+#   mutate(other_sensory_data=case_when(
+#     other_sensory_data == "" ~ "None",
+#     T ~ other_sensory_data
+#   ))
 
 type_of_research_sankey <- read.csv(paste0("data/processed/", round, "/type_of_research.csv")) %>%
-  distinct(DOI,type_of_research) %>% 
-  group_by(DOI) %>% 
+  distinct(X0,research_type) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
-         type_of_research=case_when(
+         research_type=case_when(
            count > 1 ~ "mixed",
-           T ~ type_of_research
+           T ~ research_type
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
-  mutate(type_of_research=case_when(
-    type_of_research == "" ~ "None",
-    T ~ type_of_research
+  distinct(X0, .keep_all = T) %>% 
+  mutate(research_type=case_when(
+    research_type != "Qualitative" & research_type != "Quantitative" ~ "Mixed",
+    T ~ research_type
   ))
 
 type_of_research_detail_sankey <- read.csv(paste0("data/processed/", round, "/type_of_research_detail.csv")) %>% 
-  distinct(DOI,type_of_research_detail) %>% 
-  group_by(DOI) %>% 
+  distinct(X0,research_types) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
-         type_of_research_detail=case_when(
+         research_types=case_when(
            count > 1 ~ "mixed",
-           T ~ type_of_research_detail
+           T ~ research_types
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
-  mutate(type_of_research_detail=case_when(
-    type_of_research_detail == "" ~ "None",
-    T ~ type_of_research_detail
+  distinct(X0, .keep_all = T) %>% 
+  mutate(research_types=case_when(
+    research_types == "" ~ "None",
+    T ~ research_types
   ))
 
-cv_model_purpose_sankey <- read.csv(paste0("data/processed/", round, "/cv_model_purpose.csv")) %>% 
+cv_model_purpose_sankey <- read.csv(paste0("data/processed/", round, "/cv_model.csv")) %>% 
+  rename("cv_model_purpose" = "X1") %>%
   filter(cv_model_purpose != "") %>% 
   mutate(cv_model_purpose = tolower(cv_model_purpose),
          cv_model_purpose = case_when(
@@ -756,20 +944,21 @@ cv_model_purpose_sankey <- read.csv(paste0("data/processed/", round, "/cv_model_
            str_detect(cv_model_purpose, "extraction") ~ "feature extraction",
            TRUE ~ "others"
          )) %>% 
-  distinct(DOI,cv_model_purpose) %>% 
-  group_by(DOI) %>% 
+  distinct(X0,cv_model_purpose) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
          cv_model_purpose=case_when(
            count > 1 ~ "mixed",
            T ~ cv_model_purpose
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
+  distinct(X0, .keep_all = T) %>% 
   mutate(cv_model_purpose=case_when(
     cv_model_purpose == "" ~ "None",
     T ~ cv_model_purpose
   ))
 
-cv_model_training_sankey <- read.csv(paste0("data/processed/", round, "/cv_model_training.csv")) %>%
+cv_model_training_sankey <- read.csv(paste0("data/processed/", round, "/cv_model.csv")) %>%
+  rename("cv_model_training" = "X2") %>%
   filter(cv_model_training != "") %>% 
   mutate(cv_model_training = tolower(cv_model_training),
          cv_model_training = case_when(
@@ -779,14 +968,14 @@ cv_model_training_sankey <- read.csv(paste0("data/processed/", round, "/cv_model
            TRUE ~ "others"
          )) %>% 
   filter(cv_model_training!="others") %>% 
-  distinct(DOI,cv_model_training) %>% 
-  group_by(DOI) %>% 
+  distinct(X0,cv_model_training) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
          cv_model_training=case_when(
            count > 1 ~ "mixed",
            T ~ cv_model_training
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
+  distinct(X0, .keep_all = T) %>% 
   mutate(cv_model_training=case_when(
     cv_model_training == "" ~ "None",
     T ~ cv_model_training
@@ -802,14 +991,14 @@ code_availability_sankey <- read.csv(paste0("data/processed/", round, "/code_ava
            str_detect(code_availability, "not available")  ~ "code not available",
            TRUE ~ "others"
          )) %>% 
-  distinct(DOI,code_availability) %>% 
-  group_by(DOI) %>% 
+  distinct(X0,code_availability) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
          code_availability=case_when(
            count > 1 ~ "mixed",
            T ~ code_availability
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
+  distinct(X0, .keep_all = T) %>% 
   mutate(code_availability=case_when(
     code_availability == "" ~ "None",
     T ~ code_availability
@@ -825,25 +1014,36 @@ data_availability_sankey <- read.csv(paste0("data/processed/", round, "/data_ava
            str_detect(data_availability, "not available")  ~ "data not available",
            TRUE ~ "others"
          )) %>% 
-  distinct(DOI,data_availability) %>% 
-  group_by(DOI) %>% 
+  distinct(X0,data_availability) %>% 
+  group_by(X0) %>% 
   mutate(count=n(),
          data_availability=case_when(
            count > 1 ~ "mixed",
            T ~ data_availability
          )) %>% 
-  distinct(DOI, .keep_all = T) %>% 
+  distinct(X0, .keep_all = T) %>% 
   mutate(data_availability=case_when(
     data_availability == "" ~ "None",
     T ~ data_availability
   ))
+
+irb_sankey <- read.csv(paste0("data/processed/", round, "/irb.csv")) %>%
+  left_join(citations, by = "X0") %>%
+  filter(!is.na(record_id)) %>% 
+  rename("irb" = "irb_approval") %>% 
+  filter(irb != "") %>% 
+  mutate(irb = tolower(irb),
+         irb = case_when(
+           str_detect(irb, "yes") ~ "Mentioned",
+           TRUE ~ "Not mentioned"
+         ))
 
 df_list <- list(
             aspect_sankey, 
             extent_sankey,
             image_data_type_sankey,
             subjective_data_type_sankey,
-            other_sensory_data_sankey,
+            # other_sensory_data_sankey,
             type_of_research_sankey,
             type_of_research_detail_sankey,
             cv_model_purpose_sankey,
@@ -852,7 +1052,7 @@ df_list <- list(
             data_availability_sankey
             )
 
-joined_sankey <- reduce(df_list, left_join, by = "DOI") %>% 
+joined_sankey <- reduce(df_list, left_join, by = "X0") %>% 
   select(-contains("count")) %>% 
   mutate_all(~replace_na(.,"None")) %>% 
   mutate_all(~str_replace_all(.,"None", "NA")) %>% 
@@ -901,7 +1101,7 @@ ggsave(paste0(dir_figure, "sankey.png"), width = 20, height = 10)
 
 # table: citation, aspect, image data type, subjective data type ----------
 # load data
-aspect_table <- read.csv(paste0("data/processed/", round, "/recalibrated_aspect.csv")) %>% 
+aspect_table <- read.csv(paste0("data/processed/", round, "/aspect.csv")) %>% 
   distinct(X0, improved_aspect) %>% 
   left_join(citations, by = "X0") %>%
   filter(!is.na(record_id)) %>% 
@@ -917,22 +1117,32 @@ aspect_table <- read.csv(paste0("data/processed/", round, "/recalibrated_aspect.
       str_detect(aspect, "others: sensory perception") ~ "landscape",
       str_detect(aspect, "others: visual aesthetics") ~ "landscape",
       str_detect(aspect, "others: population prediction") ~ "public space",
+      str_detect(aspect, "greenery") | str_detect(aspect, "waterscapes") ~ "green and blue space",
+      str_detect(aspect, "infrastructure") ~ "street design",
       TRUE ~ aspect)) %>% 
-  rename("file_name" = "X0")
+  rename("file_name" = "X0") %>% 
+  distinct(file_name)
 
 citations_table <- read.csv(paste0("data/processed/", round, "/citations_by_aspect.csv")) %>% 
-  rename("count"="aspect.1") %>% 
-  mutate(aspect = case_when(
+  mutate(citations_list = strsplit(citations, ",\\s*")) %>%
+  unnest(citations_list) %>%
+  distinct(citations_list, .keep_all = TRUE) %>% 
+  # group by aspect and create a new column to store citations_list as a combined string
+  mutate(
+    aspect = case_when(
     aspect == "the summary provided does not contain enough information to reclassify the aspect. please provide a more detailed summary." ~ "public space",
-    str_detect(aspect, "reclassify the aspect of the study") ~ "greenery",
+    str_detect(aspect, "reclassify the aspect of the study") ~ "green and blue space",
     str_detect(aspect, "others: study methodology") ~ "landscape",
     str_detect(aspect, "others: sensory perception") ~ "landscape",
     str_detect(aspect, "others: visual aesthetics") ~ "landscape",
     str_detect(aspect, "others: population prediction") ~ "public space",
+    str_detect(aspect, "greenery") | str_detect(aspect, "waterscapes") ~ "green and blue space",
+    str_detect(aspect, "infrastructure") ~ "street design",
     TRUE ~ aspect)) %>% 
+  distinct(aspect, citations_list) %>%
   group_by(aspect) %>%
-  summarise(citations = paste(citations, collapse = ", "),
-            count = sum(count)) %>% 
+  summarize(citations = paste(citations, collapse = ", "),
+    count = n()) %>% 
   arrange(desc(count))
 
 subjective_data_type_table <-read.csv(paste0("data/processed/", round, "/perception_data_type.csv")) %>%
@@ -1006,7 +1216,7 @@ for (aspect_subjective in unique_aspects_subjective) {
           axis.text.x = element_blank(),
           panel.grid.major.x = element_blank(),
           panel.grid.minor = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+          plot.margin = margin(20, 20, 20, 20))
   
   # Save the plot as an image
   ggsave(paste0(dir_figure, "subjective_bar_plot_", aspect_subjective, ".png"), plot = p, width = 3, height = 3, dpi = 1000)
@@ -1049,7 +1259,7 @@ for (aspect_image in unique_aspects_image) {
           axis.text.x = element_blank(),
           panel.grid.major.x = element_blank(),
           panel.grid.minor = element_blank(),
-          plot.margin = margin(0, 0, 0, 0))
+          plot.margin = margin(20, 20, 20, 20))
   
   # Save the plot as an image
   ggsave(paste0(dir_figure, "image_bar_plot_", aspect_image, ".png"), plot = p, width = 3.1, height = 3, dpi = 1000)
@@ -1100,4 +1310,3 @@ print(latex_table,
       caption.placement = "top",
       table.placement = "tbp")
 sink()
-

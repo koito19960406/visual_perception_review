@@ -11,7 +11,7 @@ from langchain.prompts.chat import (
 from langchain import PromptTemplate, LLMChain
 from langchain.text_splitter import CharacterTextSplitter
 
-from util.log_util import get_logger
+from src.models.util.log_util import get_logger
 logger = get_logger(__name__)
 
 class ReviewWriter:
