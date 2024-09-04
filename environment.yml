@@ -1,0 +1,27 @@
+name: vis_review
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.8
+  - spacy
+  - click
+  - openai
+  - geopy
+  - pandas
+  - python-dotenv
+  - tqdm
+  - polars
+  - geotext
+  - rich
+  - langchain
+  - pytorch
+  - torchaudio
+  - torchvision
+  - faiss
+  - transformers
+  - nltk
+  - ipykernel
+  - pango
+  - ipywidgets
+prefix: /Users/koichiito/opt/anaconda3/envs/vis_review
